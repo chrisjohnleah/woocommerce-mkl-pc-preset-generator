@@ -470,17 +470,38 @@ class MKL_PC_Preset_Generator_Admin_UI
                 // Validate against conditional logic
                 $is_valid = $validator->validate_combination($combination);
 
-                if ($combination_index <= 5 || $is_valid) {
-                    // Log first 5 combinations AND any valid ones for debugging
-                    $combo_str = implode(' + ', array_map(function ($c) {
-                        return $c['layer_name'] . ':' . $c['choice_name'];
-                    }, $combination));
+                // Generate combination string for logging
+                $combo_str = implode(' + ', array_map(function ($c) {
+                    return $c['layer_name'] . ':' . $c['choice_name'];
+                }, $combination));
 
+                if ($combination_index <= 5 || $is_valid) {
                     if ($is_valid) {
                         error_log("✓ VALID Combination #$combination_index: $combo_str");
                     } elseif ($combination_index <= 5) {
-                        error_log("✗ Combination #$combination_index: INVALID");
+                        error_log("✗ Combination #$combination_index: INVALID - $combo_str");
                     }
+                }
+                
+                // Log problematic combinations (Rear Upstand + Backlip with Steel)
+                $has_steel_worktop = false;
+                $has_rear_upstand = false;
+                $has_backlip = false;
+                
+                foreach ($combination as $choice) {
+                    if ($choice['layer_name'] === 'Worktop' && $choice['choice_name'] === 'Steel') {
+                        $has_steel_worktop = true;
+                    }
+                    if ($choice['layer_name'] === 'Rear Upstand' && $choice['choice_name'] === 'Yes') {
+                        $has_rear_upstand = true;
+                    }
+                    if ($choice['layer_name'] === 'Backlip' && $choice['choice_name'] === 'Yes') {
+                        $has_backlip = true;
+                    }
+                }
+                
+                if ($has_steel_worktop && $has_rear_upstand && $has_backlip) {
+                    error_log("⚠️ PROBLEMATIC: Steel + Rear Upstand + Backlip - Marked as " . ($is_valid ? 'VALID' : 'INVALID'));
                 }
 
                 if (! $is_valid) {

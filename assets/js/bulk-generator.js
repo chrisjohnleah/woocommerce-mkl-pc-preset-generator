@@ -158,22 +158,26 @@
             // Preload images on first batch only
             if (offset === 0 && totalGenerated === 0) {
                 var $container = $(".mkl-pc-bulk-generator");
-                var $progress = $container.find(".mkl-pc-bulk-generator-progress");
+                var $progress = $container.find(
+                    ".mkl-pc-bulk-generator-progress",
+                );
                 var $progressStatus = $progress.find(".progress-status");
-                
+
                 $progress.show();
-                $progressStatus.text("Preloading images for instant rendering...");
-                
-                preloadConfiguratorImages(function() {
+                $progressStatus.text(
+                    "Preloading images for instant rendering...",
+                );
+
+                preloadConfiguratorImages(function () {
                     // Continue with batch generation after preload
                     processBatchAfterPreload(productId, offset, totalGenerated);
                 });
                 return;
             }
-            
+
             processBatchAfterPreload(productId, offset, totalGenerated);
         }
-        
+
         // Process batch after images are preloaded
         function processBatchAfterPreload(productId, offset, totalGenerated) {
             $.ajax({
@@ -274,27 +278,27 @@
         function preloadConfiguratorImages(callback) {
             console.log("🖼️ Preloading all configurator images...");
             var imageUrls = [];
-            
+
             // Collect all choice images from all layers
             if (PC.fe.layers) {
-                PC.fe.layers.each(function(layer) {
-                    var choices = layer.get('choices');
+                PC.fe.layers.each(function (layer) {
+                    var choices = layer.get("choices");
                     if (choices) {
-                        choices.each(function(choice) {
+                        choices.each(function (choice) {
                             // Get the main image
                             var mainImage = choice.get_image();
                             if (mainImage) imageUrls.push(mainImage);
-                            
+
                             // Get thumbnail if different
-                            var thumbnail = choice.get_image('thumbnail');
+                            var thumbnail = choice.get_image("thumbnail");
                             if (thumbnail && thumbnail !== mainImage) {
                                 imageUrls.push(thumbnail);
                             }
-                            
+
                             // Get angles (different views)
-                            var angles = choice.get('angles');
+                            var angles = choice.get("angles");
                             if (angles && angles.length) {
-                                angles.forEach(function(angle) {
+                                angles.forEach(function (angle) {
                                     if (angle.image && angle.image.large) {
                                         imageUrls.push(angle.image.large);
                                     }
@@ -304,24 +308,24 @@
                     }
                 });
             }
-            
+
             // Remove duplicates
             imageUrls = Array.from(new Set(imageUrls));
-            
+
             console.log("  Found " + imageUrls.length + " images to preload");
-            
+
             if (imageUrls.length === 0) {
                 callback();
                 return;
             }
-            
+
             // Preload all images
             var loadedCount = 0;
             var totalCount = imageUrls.length;
-            
-            imageUrls.forEach(function(url) {
+
+            imageUrls.forEach(function (url) {
                 var img = new Image();
-                img.onload = img.onerror = function() {
+                img.onload = img.onerror = function () {
                     loadedCount++;
                     if (loadedCount === totalCount) {
                         console.log("✓ All images preloaded!");
@@ -367,40 +371,47 @@
                     choice.choice_name,
                 );
 
-                // Method 1: Use Backbone API directly (best)
+                // CRITICAL: Open the layer FIRST, then select the choice
                 var layer = PC.fe.layers.get(choice.layer_id);
-                if (layer && layer.get("choices")) {
-                    console.log("  Using Backbone collection.selectChoice()");
-                    var choices = layer.get("choices");
-                    choices.selectChoice(choice.choice_id);
-
-                    // Make layer active to show choices
-                    layer.set("active", true);
-
-                    // Wait for rendering (reduced from 300ms to 150ms)
-                    setTimeout(clickNextChoice, 150);
+                if (!layer) {
+                    console.warn("  Layer not found:", choice.layer_id);
+                    clickNextChoice();
                     return;
                 }
 
-                // Method 2: Find and click the button DOM element
-                var found = false;
-                $("li.choice").each(function () {
-                    var view = $(this).data("view");
-                    if (
-                        view && view.model && view.model.id == choice.choice_id
-                    ) {
-                        console.log("  Found choice view, clicking button...");
-                        $(this).find("> button").trigger("mousedown");
-                        found = true;
-                        return false; // break loop
+                // Step 1: Make sure ALL other layers are closed
+                PC.fe.layers.each(function(l) {
+                    if (l.get('id') !== choice.layer_id) {
+                        l.set('active', false);
                     }
                 });
 
-                if (found) {
-                    setTimeout(clickNextChoice, 150);
+                // Step 2: Open THIS layer and wait for it to render
+                if (!layer.get('active')) {
+                    console.log("  Opening layer:", choice.layer_name);
+                    layer.set('active', true);
+                    
+                    // Wait for layer to open and render
+                    setTimeout(function() {
+                        selectChoiceInLayer();
+                    }, 250);
                 } else {
-                    console.warn("Could not select:", choice.layer_name);
-                    clickNextChoice();
+                    selectChoiceInLayer();
+                }
+
+                function selectChoiceInLayer() {
+                    // Step 3: Now select the choice using Backbone API
+                    var choices = layer.get("choices");
+                    if (choices) {
+                        console.log("  Selecting choice via Backbone API...");
+                        choices.selectChoice(choice.choice_id);
+                        
+                        // Wait for visual rendering to complete
+                        setTimeout(clickNextChoice, 300);
+                    } else {
+                        console.warn("  No choices collection found");
+                        clickNextChoice();
+                    }
                 }
             }
 
