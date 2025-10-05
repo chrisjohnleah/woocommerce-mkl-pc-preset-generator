@@ -48,10 +48,10 @@ class MKL_PC_Preset_Saver
             $preset_name = $this->make_unique_name($preset_name);
         }
 
-        // Convert combination to configurator format
-        $configuration_data = $this->combination_to_configuration($combination);
+        // Convert combination to complete configurator format (including visual layers)
+        $configuration_data = $this->config_builder->build_complete_configuration($combination);
 
-        error_log("Attempting to save preset: $preset_name");
+        error_log("Attempting to save preset: $preset_name with " . count($configuration_data) . " layers");
 
         // Check for duplicate configurations FIRST (before name check)
         if ($this->preset_configuration_exists($combination)) {
