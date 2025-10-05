@@ -488,11 +488,15 @@ class MKL_PC_Preset_Generator_Admin_UI
                     continue;
                 }
 
-                // Return combination to frontend for expansion and saving
+                // Found a valid combination - send to frontend immediately
                 // The frontend will use PC.fe.setConfig() + PC.fe.save_data.save()
                 // to get the complete configuration with all visual layers
                 $saved++;
                 $last_valid_combination = $combination;
+                
+                // Stop after finding ONE valid combination per batch
+                // Frontend will expand and save it, then request next batch
+                break;
             }
 
             $new_offset = $offset + $batch_size;
