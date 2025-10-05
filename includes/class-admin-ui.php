@@ -327,19 +327,46 @@ class MKL_PC_Preset_Generator_Admin_UI
 
             error_log("RAW CALCULATION: " . number_format($simple_estimate) . " combinations");
 
-            // Use SMART constraint-based generation to count ONLY valid combinations
-            // This is much faster than brute-force + filter
-            $smart_generator = new MKL_PC_Smart_Combination_Generator($product_id);
-
+            // Use SAMPLING: Check first 100k combinations and extrapolate
+            $validator = new MKL_PC_Preset_Conditional_Validator($product_id);
+            
+            $sample_size = 100000;
+            $valid_count = 0;
+            $checked = 0;
+            $batch_size = 100;
+            $offset = 0;
+            
             $start_time = microtime(true);
-            $valid_count = $smart_generator->count_valid_combinations();
+            
+            while ($checked < $sample_size) {
+                $combinations = $generator->generate_combinations_batch($offset, $batch_size);
+                
+                if (empty($combinations)) {
+                    break; // No more combinations
+                }
+                
+                foreach ($combinations as $combination) {
+                    $checked++;
+                    if ($validator->validate_combination($combination)) {
+                        $valid_count++;
+                    }
+                    
+                    if ($checked >= $sample_size) {
+                        break;
+                    }
+                }
+                
+                $offset += $batch_size;
+            }
+            
             $elapsed = round(microtime(true) - $start_time, 2);
-
-            error_log("Smart generation found $valid_count valid combinations in {$elapsed}s");
-
+            $pass_rate = $checked > 0 ? round(($valid_count / $checked) * 100, 2) : 0;
+            
+            error_log("Sampling: $valid_count valid out of $checked checked ({$pass_rate}% pass rate) in {$elapsed}s");
+            
             $existing = $saver->get_preset_count();
-
-            $message = "Found exactly $valid_count valid combinations (smart constraint-based counting)";
+            
+            $message = "Sample: $valid_count valid in " . number_format($checked) . " checked ({$pass_rate}% pass rate). Estimated total: " . number_format($valid_count * 10) . "+";
 
             wp_send_json_success([
                 'valid_count' => $valid_count,
