@@ -43,9 +43,12 @@
                 },
                 success: function (response) {
                     if (response.success) {
-                        // Update stats
+                        var validCount = response.data.valid_count || 0;
+                        var totalChecked = response.data.total_checked || 0;
+                        
+                        // Update stats with actual valid count
                         $container.find('[data-stat="estimated"]').text(
-                            response.data.total_layers + " layers",
+                            validCount.toLocaleString() + " valid",
                         );
                         $container.find('[data-stat="existing"]').text(
                             response.data.existing.toLocaleString(),
@@ -54,13 +57,8 @@
                         // Enable generate button
                         $generateBtn.prop("disabled", false);
 
-                        // Show warning if applicable
-                        if (response.data.warning) {
-                            alert(
-                                response.data.warning +
-                                    '\n\nClick "Generate All Presets" to start. The system will process combinations in batches and validate each one against your conditional logic rules.',
-                            );
-                        }
+                        // Show message
+                        alert(response.data.message);
                     } else {
                         alert(
                             MKL_PC_BulkGenerator.strings.error + ": " +
@@ -73,7 +71,7 @@
                 },
                 complete: function () {
                     $estimateBtn.prop("disabled", false).text(
-                        "Estimate Combinations",
+                        "Count Valid Combinations",
                     );
                 },
             });
