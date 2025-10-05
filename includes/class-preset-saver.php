@@ -50,13 +50,13 @@ class MKL_PC_Preset_Saver
         $configuration_data = $this->combination_to_configuration($combination);
 
         error_log("Attempting to save preset: $preset_name");
-        
+
         // Check for duplicate configurations FIRST (before name check)
         if ($this->preset_configuration_exists($combination)) {
             error_log("Skipping - preset configuration already exists");
             return new WP_Error('duplicate_config', __('Preset with this exact configuration already exists', 'mkl-pc-preset-generator'));
         }
-        
+
         error_log("Configuration data: " . json_encode($configuration_data));
 
         // Create preset configuration object
