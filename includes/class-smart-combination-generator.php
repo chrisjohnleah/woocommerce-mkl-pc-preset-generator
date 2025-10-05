@@ -160,8 +160,10 @@ class MKL_PC_Smart_Combination_Generator
                 'choice_name' => isset($choice['name']) ? $choice['name'] : ''
             ]]);
 
-            // Recurse to next layer (validation happens at the end for complete combinations)
-            $this->generate_recursive($layer_index + 1, $selection, $valid_combinations);
+            // Early pruning using partial validation
+            if ($this->validator->validate_partial_combination($selection)) {
+                $this->generate_recursive($layer_index + 1, $selection, $valid_combinations);
+            }
         }
     }
 
