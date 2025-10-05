@@ -14,6 +14,7 @@ class MKL_PC_Preset_Saver
 {
 
     private $product_id;
+    private $config_builder;
 
     /**
      * Constructor
@@ -21,6 +22,7 @@ class MKL_PC_Preset_Saver
     public function __construct($product_id)
     {
         $this->product_id = $product_id;
+        $this->config_builder = new MKL_PC_Configuration_Builder($product_id);
     }
 
     /**

@@ -62,6 +62,7 @@ class MKL_PC_Preset_Bulk_Generator
         require_once MKL_PC_PRESET_GENERATOR_PATH . 'includes/class-combination-generator.php';
         require_once MKL_PC_PRESET_GENERATOR_PATH . 'includes/class-smart-combination-generator.php';
         require_once MKL_PC_PRESET_GENERATOR_PATH . 'includes/class-conditional-validator.php';
+        require_once MKL_PC_PRESET_GENERATOR_PATH . 'includes/class-configuration-builder.php';
         require_once MKL_PC_PRESET_GENERATOR_PATH . 'includes/class-preset-saver.php';
         require_once MKL_PC_PRESET_GENERATOR_PATH . 'includes/class-admin-ui.php';
 
