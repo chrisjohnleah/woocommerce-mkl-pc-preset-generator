@@ -294,8 +294,8 @@
                     // Make layer active to show choices
                     layer.set("active", true);
 
-                    // Wait for rendering
-                    setTimeout(clickNextChoice, 300);
+                    // Wait for rendering (reduced from 300ms to 150ms)
+                    setTimeout(clickNextChoice, 150);
                     return;
                 }
 
@@ -314,7 +314,7 @@
                 });
 
                 if (found) {
-                    setTimeout(clickNextChoice, 300);
+                    setTimeout(clickNextChoice, 150);
                 } else {
                     console.warn("Could not select:", choice.layer_name);
                     clickNextChoice();
@@ -370,8 +370,8 @@
                                         generatedName,
                                     );
 
-                                    // Image generation happens async on the server now
-                                    setTimeout(finalCallback, 500);
+                                    // Image generation happens async on server (reduced from 500ms to 200ms)
+                                    setTimeout(finalCallback, 200);
                                 } else {
                                     console.warn("✗ Save failed:", response);
                                     finalCallback();
@@ -381,7 +381,7 @@
 
                         // Save the preset (like clicking the Save button)
                         PC.fe.saveYourDesign.saveDesign(mockElement, "preset");
-                    }, 200);
+                    }, 100);
                 };
 
                 // Add the hook listener
@@ -391,11 +391,11 @@
                     configUpdateHandler,
                 );
 
-                // Fallback timeout in case the hook never fires
+                // Fallback timeout in case the hook never fires (reduced from 2000ms to 800ms)
                 setTimeout(function () {
                     console.warn("Hook timeout, forcing save...");
                     configUpdateHandler();
-                }, 2000);
+                }, 800);
             }
 
             // Start clicking choices
@@ -408,7 +408,14 @@
             var nameParts = [];
 
             // Ambiguous choice names that should be prefixed with layer name
-            var ambiguousChoices = ["Yes", "No", "Enabled", "Disabled", "On", "Off"];
+            var ambiguousChoices = [
+                "Yes",
+                "No",
+                "Enabled",
+                "Disabled",
+                "On",
+                "Off",
+            ];
 
             // Extract non-"None" user choices (exclude visual/group layers)
             configArray.forEach(function (layer) {
