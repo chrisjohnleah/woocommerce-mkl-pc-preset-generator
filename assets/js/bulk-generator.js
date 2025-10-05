@@ -278,34 +278,44 @@
                 }
 
                 console.log(
-                    "Clicking:",
+                    "Selecting:",
                     choice.layer_name,
                     "=",
                     choice.choice_name,
                 );
 
-                // Find the ACTUAL DOM element for this choice and click it
-                var selector = '.choice[data-choice-id="' + choice.choice_id + '"][data-layer-id="' + choice.layer_id + '"]';
-                var $choiceElement = $(selector);
-                
-                if ($choiceElement.length) {
-                    console.log("  Found DOM element, clicking it...");
-                    // Actually click the DOM element (triggers full visual update pipeline)
-                    $choiceElement.trigger('click');
+                // Method 1: Use Backbone API directly (best)
+                var layer = PC.fe.layers.get(choice.layer_id);
+                if (layer && layer.get('choices')) {
+                    console.log("  Using Backbone collection.selectChoice()");
+                    var choices = layer.get('choices');
+                    choices.selectChoice(choice.choice_id);
                     
-                    // Wait for rendering before next choice
-                    setTimeout(clickNextChoice, 200);
-                } else {
-                    // Fallback: Try programmatic selection
-                    console.warn("  DOM element not found, using selectChoice() fallback");
-                    var layerContent = PC.fe.getLayerContent(choice.layer_id);
-                    if (layerContent && layerContent.selectChoice) {
-                        layerContent.selectChoice(choice.choice_id, true);
-                        setTimeout(clickNextChoice, 200);
-                    } else {
-                        console.warn("Could not select:", choice.layer_name);
-                        clickNextChoice();
+                    // Make layer active to show choices
+                    layer.set('active', true);
+                    
+                    // Wait for rendering
+                    setTimeout(clickNextChoice, 300);
+                    return;
+                }
+
+                // Method 2: Find and click the button DOM element
+                var found = false;
+                $('li.choice').each(function() {
+                    var view = $(this).data('view');
+                    if (view && view.model && view.model.id == choice.choice_id) {
+                        console.log("  Found choice view, clicking button...");
+                        $(this).find('> button').trigger('mousedown');
+                        found = true;
+                        return false; // break loop
                     }
+                });
+
+                if (found) {
+                    setTimeout(clickNextChoice, 300);
+                } else {
+                    console.warn("Could not select:", choice.layer_name);
+                    clickNextChoice();
                 }
             }
 
