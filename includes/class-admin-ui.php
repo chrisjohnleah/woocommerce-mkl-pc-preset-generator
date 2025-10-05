@@ -328,10 +328,10 @@ class MKL_PC_Preset_Generator_Admin_UI
 
             error_log("RAW CALCULATION: " . number_format($simple_estimate) . " combinations");
 
-            // Use SAMPLING: Check first 1M combinations for accurate estimate
+            // Use SAMPLING: Check first 100k combinations for fast estimate
             $validator = new MKL_PC_Preset_Conditional_Validator($product_id);
-
-            $sample_size = 1000000;
+            
+            $sample_size = 100000;
             $valid_count = 0;
             $checked = 0;
             $batch_size = 100;

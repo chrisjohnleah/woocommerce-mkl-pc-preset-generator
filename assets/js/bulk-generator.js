@@ -260,17 +260,22 @@
 
             // Listen for setConfig completion hook
             var configApplied = false;
-            var hookHandler = function() {
+            var hookHandler = function () {
                 if (configApplied) return;
                 configApplied = true;
-                
-                console.log("Configuration applied and rendered, saving preset...");
-                
+
+                console.log(
+                    "Configuration applied and rendered, saving preset...",
+                );
+
                 // Remove the hook listener
-                wp.hooks.removeAction('PC.fe.setConfig', 'MKL/PC/BulkGenerator/setConfig');
-                
+                wp.hooks.removeAction(
+                    "PC.fe.setConfig",
+                    "MKL/PC/BulkGenerator/setConfig",
+                );
+
                 // Wait a bit more for images to load and conditional logic to process
-                setTimeout(function() {
+                setTimeout(function () {
                     // Create a mock element that mimics the preset admin save button
                     var mockElement = {
                         $el: $("<div>"),
@@ -280,7 +285,10 @@
                     // Listen for save completion
                     mockElement.$el.one("saved", function (event, response) {
                         if (response && response.saved) {
-                            console.log("✓ Preset saved successfully:", presetName);
+                            console.log(
+                                "✓ Preset saved successfully:",
+                                presetName,
+                            );
                         } else {
                             console.warn("✗ Failed to save preset:", response);
                         }
@@ -293,10 +301,14 @@
                     PC.fe.saveYourDesign.saveDesign(mockElement, "preset");
                 }, 1000); // Additional delay for images to load
             };
-            
+
             // Add hook listener BEFORE applying config
-            wp.hooks.addAction('PC.fe.setConfig', 'MKL/PC/BulkGenerator/setConfig', hookHandler);
-            
+            wp.hooks.addAction(
+                "PC.fe.setConfig",
+                "MKL/PC/BulkGenerator/setConfig",
+                hookHandler,
+            );
+
             // Apply combination to configurator (this triggers visual layer updates)
             PC.fe.setConfig(combination);
         }
