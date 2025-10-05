@@ -286,14 +286,14 @@
 
                 // Method 1: Use Backbone API directly (best)
                 var layer = PC.fe.layers.get(choice.layer_id);
-                if (layer && layer.get('choices')) {
+                if (layer && layer.get("choices")) {
                     console.log("  Using Backbone collection.selectChoice()");
-                    var choices = layer.get('choices');
+                    var choices = layer.get("choices");
                     choices.selectChoice(choice.choice_id);
-                    
+
                     // Make layer active to show choices
-                    layer.set('active', true);
-                    
+                    layer.set("active", true);
+
                     // Wait for rendering
                     setTimeout(clickNextChoice, 300);
                     return;
@@ -301,11 +301,13 @@
 
                 // Method 2: Find and click the button DOM element
                 var found = false;
-                $('li.choice').each(function() {
-                    var view = $(this).data('view');
-                    if (view && view.model && view.model.id == choice.choice_id) {
+                $("li.choice").each(function () {
+                    var view = $(this).data("view");
+                    if (
+                        view && view.model && view.model.id == choice.choice_id
+                    ) {
                         console.log("  Found choice view, clicking button...");
-                        $(this).find('> button').trigger('mousedown');
+                        $(this).find("> button").trigger("mousedown");
                         found = true;
                         return false; // break loop
                     }
@@ -320,57 +322,62 @@
             }
 
             function saveCurrentConfiguration(finalCallback) {
-                // Wait for final rendering to complete
-                setTimeout(function () {
-                    console.log("All choices clicked, now saving preset...");
+                console.log("All choices clicked, waiting for configuration to update...");
 
-                    // Get complete configuration from the now-rendered configurator
-                    var completeConfig = PC.fe.save_data.save();
-                    var configArray = JSON.parse(completeConfig);
+                // Wait for Backbone models to propagate changes
+                // Listen for the price update hook which fires after all changes are processed
+                var configUpdateHandler = function() {
+                    wp.hooks.removeAction('PC.fe.extra_price.after.update_price', 'mkl/pc-bulk-generator', configUpdateHandler);
+                    
+                    setTimeout(function() {
+                        console.log("Configuration updated, now saving preset...");
 
-                    // Generate unique name from all selected options
-                    var generatedName = generatePresetName(configArray);
-                    console.log("Generated preset name:", generatedName);
+                        // Get complete configuration from the now-rendered configurator
+                        var completeConfig = PC.fe.save_data.save();
+                        var configArray = JSON.parse(completeConfig);
 
-                    // Fill in the preset name field
-                    var $presetInput = $(
-                        '.mkl_pc_admin input[name="new_preset_title"]',
-                    );
-                    $presetInput.val(generatedName);
+                        // Generate unique name from all selected options
+                        var generatedName = generatePresetName(configArray);
+                        console.log("Generated preset name:", generatedName);
 
-                    // Create mock element for the save workflow
-                    var mockElement = {
-                        $el: $("<div>"),
-                        $input: $("<input>").val(generatedName),
-                    };
+                        // Fill in the preset name field
+                        var $presetInput = $(
+                            '.mkl_pc_admin input[name="new_preset_title"]',
+                        );
+                        $presetInput.val(generatedName);
 
-                    // Listen for save completion
-                    mockElement.$el.one("saved", function (event, response) {
-                        if (response && response.saved) {
-                            console.log("✓ Preset saved:", generatedName);
+                        // Create mock element for the save workflow
+                        var mockElement = {
+                            $el: $("<div>"),
+                            $input: $("<input>").val(generatedName),
+                        };
 
-                            // Trigger image generation (screenshot of configurator)
-                            if (
-                                response.save_image_async &&
-                                PC.fe.saveYourDesign
-                            ) {
-                                console.log("Generating screenshot...");
-                                PC.fe.saveYourDesign.saveImage(
-                                    response.save_image_async,
-                                );
-                                setTimeout(finalCallback, 1500); // Wait for image generation
+                        // Listen for save completion
+                        mockElement.$el.one("saved", function (event, response) {
+                            if (response && response.saved) {
+                                console.log("✓ Preset saved:", generatedName);
+
+                                // Image generation happens async on the server now
+                                setTimeout(finalCallback, 500);
                             } else {
+                                console.warn("✗ Save failed:", response);
                                 finalCallback();
                             }
-                        } else {
-                            console.warn("✗ Save failed:", response);
-                            finalCallback();
-                        }
-                    });
+                        });
 
-                    // Save the preset (like clicking the Save button)
-                    PC.fe.saveYourDesign.saveDesign(mockElement, "preset");
-                }, 500); // Final delay for last layer to render
+                        // Save the preset (like clicking the Save button)
+                        PC.fe.saveYourDesign.saveDesign(mockElement, "preset");
+                    }, 200);
+                };
+
+                // Add the hook listener
+                wp.hooks.addAction('PC.fe.extra_price.after.update_price', 'mkl/pc-bulk-generator', configUpdateHandler);
+                
+                // Fallback timeout in case the hook never fires
+                setTimeout(function() {
+                    console.warn("Hook timeout, forcing save...");
+                    configUpdateHandler();
+                }, 2000);
             }
 
             // Start clicking choices
