@@ -105,7 +105,7 @@ class MKL_PC_Preset_Saver
         if (! $preset_id) {
             return new WP_Error('no_id', __('Preset ID not returned', 'mkl-pc-preset-generator'));
         }
-        
+
         // Store configuration hash to prevent future duplicates
         $config_hash = $this->hash_combination($combination);
         update_post_meta($preset_id, '_config_hash', $config_hash);
@@ -115,6 +115,23 @@ class MKL_PC_Preset_Saver
             'ID' => $preset_id,
             'post_status' => 'preset',
         ]);
+
+        // If async image saving was requested, manually trigger it now
+        // (Frontend would normally do this via AJAX, but we're on the backend)
+        if (isset($saved['save_image_async']) && $saved['save_image_async']) {
+            error_log("Triggering image generation for preset #$preset_id");
+            try {
+                $image_id = $preset->save_image($configuration_data, $preset_id);
+                if ($image_id && !is_wp_error($image_id)) {
+                    error_log("Successfully generated image #$image_id for preset #$preset_id");
+                } else {
+                    error_log("Image generation returned: " . print_r($image_id, true));
+                }
+            } catch (Exception $e) {
+                error_log("Image generation failed: " . $e->getMessage());
+                // Don't fail the whole preset save if image generation fails
+            }
+        }
 
         return $preset_id;
     }
@@ -268,7 +285,7 @@ class MKL_PC_Preset_Saver
 
         return count($presets);
     }
-    
+
     /**
      * Check if a preset with this exact configuration already exists
      * 
@@ -279,7 +296,7 @@ class MKL_PC_Preset_Saver
     {
         // Create a unique hash of the combination for comparison
         $config_hash = $this->hash_combination($combination);
-        
+
         // Check if any preset has this hash
         $args = [
             'post_type' => 'mkl_pc_configuration',
@@ -298,11 +315,11 @@ class MKL_PC_Preset_Saver
             'posts_per_page' => 1,
             'fields' => 'ids'
         ];
-        
+
         $query = new \WP_Query($args);
         return $query->have_posts();
     }
-    
+
     /**
      * Create a unique hash from a combination
      * 
@@ -313,10 +330,10 @@ class MKL_PC_Preset_Saver
     {
         // Sort by layer_id to ensure consistent hashing
         $sorted = $combination;
-        usort($sorted, function($a, $b) {
+        usort($sorted, function ($a, $b) {
             return $a['layer_id'] - $b['layer_id'];
         });
-        
+
         // Create string of layer_id:choice_id pairs
         $parts = [];
         foreach ($sorted as $choice) {
@@ -324,7 +341,7 @@ class MKL_PC_Preset_Saver
                 $parts[] = $choice['layer_id'] . ':' . $choice['choice_id'];
             }
         }
-        
+
         return md5(implode('|', $parts));
     }
 }
