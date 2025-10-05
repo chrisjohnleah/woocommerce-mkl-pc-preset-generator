@@ -274,6 +274,14 @@
                     "MKL/PC/BulkGenerator/setConfig",
                 );
 
+                // Force viewer layers to update (trigger re-render)
+                if (PC.fe.layers) {
+                    console.log("Forcing viewer layer updates...");
+                    PC.fe.layers.each(function(layer) {
+                        layer.trigger('change:active');
+                    });
+                }
+
                 // Wait a bit more for images to load and conditional logic to process
                 setTimeout(function () {
                     // Get complete configuration
