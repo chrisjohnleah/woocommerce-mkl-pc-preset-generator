@@ -335,42 +335,60 @@ class MKL_PC_Preset_Generator_Admin_UI
             $total_checked = 0;
             $batch_size = 100;
             $offset = 0;
+            $start_time = microtime(true);
+            $max_check = 100000; // Reasonable limit: check first 100k combinations
             
-            error_log("=== COUNTING ALL VALID COMBINATIONS ===");
-            error_log("NOTE: This will check EVERY combination the generator produces");
-            
-            // Process ALL combinations (no arbitrary limits)
-            while (true) {
+            error_log("=== COUNTING VALID COMBINATIONS (SAMPLE) ===");
+            error_log("NOTE: Will check first " . number_format($max_check) . " combinations as a representative sample");
+            error_log("Start time: " . date('H:i:s'));
+
+            // Process combinations up to reasonable limit
+            while ($total_checked < $max_check) {
                 $combinations = $generator->generate_combinations_batch($offset, $batch_size);
-                
+
                 if (empty($combinations)) {
                     error_log("Reached end of combinations at offset $offset");
                     break; // No more combinations - we've checked them all!
                 }
-                
+
                 foreach ($combinations as $combination) {
                     $total_checked++;
-                    
+
                     // Check if valid (same validation as generation)
                     if ($validator->validate_combination($combination)) {
                         $valid_count++;
                     }
                 }
-                
+
                 $offset += $batch_size;
-                
-                // Log progress every 10k combinations
-                if ($total_checked % 10000 == 0) {
-                    error_log("Progress: $valid_count valid out of $total_checked checked so far...");
+
+                // Log progress every 5k combinations for better visibility
+                if ($total_checked % 5000 == 0) {
+                    $elapsed = round(microtime(true) - $start_time, 2);
+                    error_log("Progress: $valid_count valid out of $total_checked checked so far... ({$elapsed}s elapsed)");
                 }
             }
-            
-            error_log("FINAL COUNT: $valid_count valid out of $total_checked total combinations");
+
+            $elapsed = round(microtime(true) - $start_time, 2);
+            $percentage = $total_checked > 0 ? round(($valid_count / $total_checked) * 100, 2) : 0;
+            error_log("SAMPLE COUNT: $valid_count valid out of $total_checked checked ($percentage% pass rate)");
+            error_log("Total time: {$elapsed} seconds");
             error_log("=== END ANALYSIS ===");
             
             $existing = $saver->get_preset_count();
             
-            $message = "Found $valid_count valid combinations out of $total_checked total";
+            // Estimate total based on pass rate
+            $estimated_total = 0;
+            if ($percentage > 0) {
+                // Very rough estimate based on sample
+                $estimated_total = round($valid_count * 10); // Conservative multiplier
+            }
+            
+            $message = "Found $valid_count valid in sample of " . number_format($total_checked);
+            $message .= " ($percentage% pass rate)";
+            if ($estimated_total > 0) {
+                $message .= ". Estimated total: ~" . number_format($estimated_total);
+            }
 
             wp_send_json_success([
                 'valid_count' => $valid_count,

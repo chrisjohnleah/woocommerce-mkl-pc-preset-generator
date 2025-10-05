@@ -30,7 +30,16 @@
             var productId = $(this).data("product-id");
 
             $estimateBtn.prop("disabled", true).text(
-                MKL_PC_BulkGenerator.strings.estimating,
+                "Counting all combinations... Please wait",
+            );
+            
+            // Show loading message
+            $stats.html(
+                '<div class="loading">' +
+                '<strong>Processing...</strong><br>' +
+                'Checking all combinations against conditional logic.<br>' +
+                'This may take 30-60 seconds depending on complexity.' +
+                '</div>'
             );
 
             $.ajax({
