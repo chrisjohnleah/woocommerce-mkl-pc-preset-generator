@@ -330,15 +330,15 @@ class MKL_PC_Preset_Generator_Admin_UI
             // Use SMART constraint-based generation to count ONLY valid combinations
             // This is much faster than brute-force + filter
             $smart_generator = new MKL_PC_Smart_Combination_Generator($product_id);
-            
+
             $start_time = microtime(true);
             $valid_count = $smart_generator->count_valid_combinations();
             $elapsed = round(microtime(true) - $start_time, 2);
-            
+
             error_log("Smart generation found $valid_count valid combinations in {$elapsed}s");
-            
+
             $existing = $saver->get_preset_count();
-            
+
             $message = "Found exactly $valid_count valid combinations (smart constraint-based counting)";
 
             wp_send_json_success([

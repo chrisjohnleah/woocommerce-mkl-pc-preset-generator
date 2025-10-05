@@ -47,7 +47,7 @@ class MKL_PC_Smart_Combination_Generator
 
         foreach ($all_layers as $layer) {
             $type = isset($layer['type']) ? $layer['type'] : 'user';
-            
+
             // Skip non-user layers
             if (in_array($type, ['visual', 'group', 'form'])) {
                 continue;
@@ -69,7 +69,7 @@ class MKL_PC_Smart_Combination_Generator
             $valid_choices = [];
             foreach ($layer_choices as $choice) {
                 $choice_name = isset($choice['name']) ? $choice['name'] : '';
-                
+
                 // Skip "None" for core layers
                 if ($is_core_layer && $choice_name === 'None') {
                     continue;
@@ -99,7 +99,7 @@ class MKL_PC_Smart_Combination_Generator
     private function load_conditions()
     {
         $this->conditions = $this->db->get('conditions', $this->product_id);
-        
+
         if (! is_array($this->conditions)) {
             $this->conditions = [];
         }
@@ -207,7 +207,7 @@ class MKL_PC_Smart_Combination_Generator
         // For smart generation, we generate all then slice
         // (Could be optimized further with generator pattern)
         static $all_combinations = null;
-        
+
         if ($all_combinations === null) {
             $all_combinations = $this->generate_valid_combinations();
         }
