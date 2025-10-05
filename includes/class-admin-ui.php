@@ -330,7 +330,7 @@ class MKL_PC_Preset_Generator_Admin_UI
 
             // Use SAMPLING: Check first 100k combinations for fast estimate
             $validator = new MKL_PC_Preset_Conditional_Validator($product_id);
-            
+
             $sample_size = 100000;
             $valid_count = 0;
             $checked = 0;
@@ -493,7 +493,7 @@ class MKL_PC_Preset_Generator_Admin_UI
                 // to get the complete configuration with all visual layers
                 $saved++;
                 $last_valid_combination = $combination;
-                
+
                 // Stop after finding ONE valid combination per batch
                 // Frontend will expand and save it, then request next batch
                 break;
@@ -523,14 +523,14 @@ class MKL_PC_Preset_Generator_Admin_UI
                 'total_generated' => $new_total_generated,
                 'safety_limit' => $SAFETY_LIMIT,
             ];
-            
+
             // Send valid combination to frontend for expansion
             if ($last_valid_combination) {
                 $response['valid_combination'] = $last_valid_combination;
                 $response['preset_name'] = $saver->generate_preset_name($last_valid_combination, []);
                 error_log("Sending valid combination to frontend for expansion");
             }
-            
+
             wp_send_json_success($response);
         } catch (Exception $e) {
             error_log('MKL PC Bulk Generator Batch Error: ' . $e->getMessage() . ' in ' . $e->getFile() . ':' . $e->getLine());
@@ -582,7 +582,7 @@ class MKL_PC_Preset_Generator_Admin_UI
 
             if (isset($saved['saved']) && $saved['saved']) {
                 $preset_id = $saved['ID'];
-                
+
                 // Ensure post status is 'preset'
                 wp_update_post([
                     'ID' => $preset_id,

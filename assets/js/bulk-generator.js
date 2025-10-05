@@ -199,7 +199,7 @@
                             expandAndSavePreset(
                                 productId,
                                 response.data.valid_combination,
-                                response.data.preset_name,
+                                null, // Name will be generated from expanded config
                                 function () {
                                     // After saving, continue with next batch
                                     if (!response.data.is_complete) {
@@ -276,10 +276,18 @@
 
                 // Wait a bit more for images to load and conditional logic to process
                 setTimeout(function () {
+                    // Get complete configuration
+                    var completeConfig = PC.fe.save_data.save();
+                    var configArray = JSON.parse(completeConfig);
+                    
+                    // Generate name from complete expanded config (includes all non-None choices)
+                    var generatedName = generatePresetName(configArray);
+                    console.log("Generated preset name:", generatedName);
+                    
                     // Create a mock element that mimics the preset admin save button
                     var mockElement = {
                         $el: $("<div>"),
-                        $input: $("<input>").val(presetName),
+                        $input: $("<input>").val(generatedName),
                     };
 
                     // Listen for save completion
@@ -287,7 +295,7 @@
                         if (response && response.saved) {
                             console.log(
                                 "✓ Preset saved successfully:",
-                                presetName,
+                                generatedName,
                             );
                         } else {
                             console.warn("✗ Failed to save preset:", response);
@@ -311,6 +319,34 @@
 
             // Apply combination to configurator (this triggers visual layer updates)
             PC.fe.setConfig(combination);
+        }
+
+        // Generate preset name from complete configuration (matches backend logic)
+        function generatePresetName(configArray) {
+            var productName = "Heavy Duty Workbench"; // Could get from PC.fe data
+            var nameParts = [];
+            
+            // Extract non-"None" user choices (exclude visual/group layers)
+            configArray.forEach(function(layer) {
+                // Only include user-selectable choices that aren't "None", "No", or empty
+                if (layer.is_choice && 
+                    layer.name && 
+                    layer.name !== 'None' && 
+                    layer.name !== 'No' &&
+                    layer.name !== '' &&
+                    !layer.layer_name.startsWith('Visual -')) {
+                    nameParts.push(layer.name);
+                }
+            });
+            
+            var name = productName + ' - ' + nameParts.join(' - ');
+            
+            // Truncate if too long
+            if (name.length > 200) {
+                name = name.substring(0, 197) + '...';
+            }
+            
+            return name;
         }
 
         function finishGeneration(totalGenerated, message) {
