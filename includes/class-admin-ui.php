@@ -334,8 +334,8 @@ class MKL_PC_Preset_Generator_Admin_UI
             $total_checked = 0;
             $batch_size = 100;
             $offset = 0;
-            $max_to_check = 50000; // Don't check more than this during estimate
-            $max_valid = 10000; // Stop after finding this many valid ones
+            $max_to_check = 200000; // Check up to 200k combinations to get more accurate count
+            $max_valid = 50000; // Stop after finding 50k valid ones (should be plenty)
 
             error_log("=== COUNTING VALID COMBINATIONS ===");
 

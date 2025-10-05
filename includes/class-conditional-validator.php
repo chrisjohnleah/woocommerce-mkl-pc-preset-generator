@@ -38,7 +38,7 @@ class MKL_PC_Preset_Conditional_Validator
         if (! is_array($this->conditions)) {
             $this->conditions = [];
         }
-        
+
         error_log("Loaded " . count($this->conditions) . " conditions for product " . $this->product_id);
     }
 
