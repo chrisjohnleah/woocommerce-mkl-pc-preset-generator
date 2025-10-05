@@ -240,21 +240,21 @@
             });
         }
 
-        // Expand combination using PC.fe and save it
+        // Expand combination using PC.fe and save it (with screenshot)
         function expandAndSavePreset(productId, combination, presetName, callback) {
             console.log('Expanding combination:', combination);
             
             // Apply combination to configurator (this triggers visual layer updates)
             PC.fe.setConfig(combination);
             
-            // Wait a moment for conditional logic to process
+            // Wait for conditional logic and rendering to complete
             setTimeout(function() {
                 // Get complete configuration from PC.fe (includes all visual layers)
                 var completeConfig = PC.fe.save_data.save();
                 
-                console.log('Expanded configuration:', completeConfig);
+                console.log('Expanded configuration with ' + JSON.parse(completeConfig).length + ' layers');
                 
-                // Send to backend for saving
+                // First save the preset (without image)
                 $.ajax({
                     url: MKL_PC_BulkGenerator.ajax_url,
                     type: 'POST',
@@ -267,8 +267,31 @@
                     },
                     success: function(saveResponse) {
                         if (saveResponse.success) {
-                            console.log('Saved preset #' + saveResponse.data.preset_id);
-                            callback();
+                            var presetId = saveResponse.data.preset_id;
+                            console.log('Saved preset #' + presetId + ', now generating image...');
+                            
+                            // Now trigger image generation using the same method as manual save
+                            $.ajax({
+                                url: wp.ajax.settings.url,
+                                type: 'POST',
+                                data: {
+                                    action: 'mkl_pc_generate_configuration_image',
+                                    config_id: presetId,
+                                    security: PC_SYD.save_config_image_nonce
+                                },
+                                success: function(imgResponse) {
+                                    if (imgResponse.success) {
+                                        console.log('Image generated for preset #' + presetId);
+                                    } else {
+                                        console.warn('Image generation failed:', imgResponse.data);
+                                    }
+                                    callback();
+                                },
+                                error: function() {
+                                    console.warn('Image generation error for preset #' + presetId);
+                                    callback();
+                                }
+                            });
                         } else {
                             console.error('Failed to save preset:', saveResponse.data.message);
                             callback();
@@ -279,7 +302,7 @@
                         callback();
                     }
                 });
-            }, 100); // 100ms delay for conditional logic to process
+            }, 500); // 500ms delay for rendering to complete
         }
 
         function finishGeneration(totalGenerated, message) {
