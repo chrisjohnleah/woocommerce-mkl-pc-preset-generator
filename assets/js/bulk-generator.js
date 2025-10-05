@@ -155,6 +155,27 @@
 
         // Process batch function
         function processBatch(productId, offset, totalGenerated) {
+            // Preload images on first batch only
+            if (offset === 0 && totalGenerated === 0) {
+                var $container = $(".mkl-pc-bulk-generator");
+                var $progress = $container.find(".mkl-pc-bulk-generator-progress");
+                var $progressStatus = $progress.find(".progress-status");
+                
+                $progress.show();
+                $progressStatus.text("Preloading images for instant rendering...");
+                
+                preloadConfiguratorImages(function() {
+                    // Continue with batch generation after preload
+                    processBatchAfterPreload(productId, offset, totalGenerated);
+                });
+                return;
+            }
+            
+            processBatchAfterPreload(productId, offset, totalGenerated);
+        }
+        
+        // Process batch after images are preloaded
+        function processBatchAfterPreload(productId, offset, totalGenerated) {
             $.ajax({
                 url: MKL_PC_BulkGenerator.ajax_url,
                 type: "POST",
