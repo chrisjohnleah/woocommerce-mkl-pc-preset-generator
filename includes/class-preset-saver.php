@@ -104,6 +104,10 @@ class MKL_PC_Preset_Saver
         if (! $preset_id) {
             return new WP_Error('no_id', __('Preset ID not returned', 'mkl-pc-preset-generator'));
         }
+        
+        // Store configuration hash to prevent future duplicates
+        $config_hash = $this->hash_combination($combination);
+        update_post_meta($preset_id, '_config_hash', $config_hash);
 
         // Ensure post status is 'preset'
         wp_update_post([
@@ -262,5 +266,64 @@ class MKL_PC_Preset_Saver
         ]);
 
         return count($presets);
+    }
+    
+    /**
+     * Check if a preset with this exact configuration already exists
+     * 
+     * @param array $combination The combination to check
+     * @return bool
+     */
+    public function preset_configuration_exists($combination)
+    {
+        // Create a unique hash of the combination for comparison
+        $config_hash = $this->hash_combination($combination);
+        
+        // Check if any preset has this hash
+        $args = [
+            'post_type' => 'mkl_pc_configuration',
+            'post_status' => 'preset',
+            'meta_query' => [
+                'relation' => 'AND',
+                [
+                    'key' => '_product_id',
+                    'value' => $this->product_id,
+                ],
+                [
+                    'key' => '_config_hash',
+                    'value' => $config_hash,
+                ]
+            ],
+            'posts_per_page' => 1,
+            'fields' => 'ids'
+        ];
+        
+        $query = new \WP_Query($args);
+        return $query->have_posts();
+    }
+    
+    /**
+     * Create a unique hash from a combination
+     * 
+     * @param array $combination
+     * @return string
+     */
+    private function hash_combination($combination)
+    {
+        // Sort by layer_id to ensure consistent hashing
+        $sorted = $combination;
+        usort($sorted, function($a, $b) {
+            return $a['layer_id'] - $b['layer_id'];
+        });
+        
+        // Create string of layer_id:choice_id pairs
+        $parts = [];
+        foreach ($sorted as $choice) {
+            if ($choice['choice_id'] !== null) {
+                $parts[] = $choice['layer_id'] . ':' . $choice['choice_id'];
+            }
+        }
+        
+        return md5(implode('|', $parts));
     }
 }
