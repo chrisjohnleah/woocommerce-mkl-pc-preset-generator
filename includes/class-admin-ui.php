@@ -329,7 +329,7 @@ class MKL_PC_Preset_Generator_Admin_UI
 
             // Use SAMPLING: Check first 1M combinations for accurate estimate
             $validator = new MKL_PC_Preset_Conditional_Validator($product_id);
-            
+
             $sample_size = 1000000;
             $valid_count = 0;
             $checked = 0;

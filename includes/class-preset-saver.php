@@ -62,9 +62,10 @@ class MKL_PC_Preset_Saver
         // Create preset configuration object
         try {
             $preset = new Mkl_PC_Preset_Configuration(0);
-            // Disable image saving for bulk generation (huge performance improvement)
-            $preset->should_save_image = false;
-            error_log("Created preset object, image saving disabled");
+            // Enable async image generation for thumbnails
+            $preset->save_image_async = true;
+            $preset->should_save_image = true;
+            error_log("Created preset object, async image saving enabled");
         } catch (Exception $e) {
             error_log("Error creating preset object: " . $e->getMessage());
             return new WP_Error('create_failed', $e->getMessage());
