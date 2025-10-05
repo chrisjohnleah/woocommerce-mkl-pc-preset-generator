@@ -322,15 +322,23 @@
             }
 
             function saveCurrentConfiguration(finalCallback) {
-                console.log("All choices clicked, waiting for configuration to update...");
+                console.log(
+                    "All choices clicked, waiting for configuration to update...",
+                );
 
                 // Wait for Backbone models to propagate changes
                 // Listen for the price update hook which fires after all changes are processed
-                var configUpdateHandler = function() {
-                    wp.hooks.removeAction('PC.fe.extra_price.after.update_price', 'mkl/pc-bulk-generator', configUpdateHandler);
-                    
-                    setTimeout(function() {
-                        console.log("Configuration updated, now saving preset...");
+                var configUpdateHandler = function () {
+                    wp.hooks.removeAction(
+                        "PC.fe.extra_price.after.update_price",
+                        "mkl/pc-bulk-generator",
+                        configUpdateHandler,
+                    );
+
+                    setTimeout(function () {
+                        console.log(
+                            "Configuration updated, now saving preset...",
+                        );
 
                         // Get complete configuration from the now-rendered configurator
                         var completeConfig = PC.fe.save_data.save();
@@ -353,17 +361,23 @@
                         };
 
                         // Listen for save completion
-                        mockElement.$el.one("saved", function (event, response) {
-                            if (response && response.saved) {
-                                console.log("✓ Preset saved:", generatedName);
+                        mockElement.$el.one(
+                            "saved",
+                            function (event, response) {
+                                if (response && response.saved) {
+                                    console.log(
+                                        "✓ Preset saved:",
+                                        generatedName,
+                                    );
 
-                                // Image generation happens async on the server now
-                                setTimeout(finalCallback, 500);
-                            } else {
-                                console.warn("✗ Save failed:", response);
-                                finalCallback();
-                            }
-                        });
+                                    // Image generation happens async on the server now
+                                    setTimeout(finalCallback, 500);
+                                } else {
+                                    console.warn("✗ Save failed:", response);
+                                    finalCallback();
+                                }
+                            },
+                        );
 
                         // Save the preset (like clicking the Save button)
                         PC.fe.saveYourDesign.saveDesign(mockElement, "preset");
@@ -371,10 +385,14 @@
                 };
 
                 // Add the hook listener
-                wp.hooks.addAction('PC.fe.extra_price.after.update_price', 'mkl/pc-bulk-generator', configUpdateHandler);
-                
+                wp.hooks.addAction(
+                    "PC.fe.extra_price.after.update_price",
+                    "mkl/pc-bulk-generator",
+                    configUpdateHandler,
+                );
+
                 // Fallback timeout in case the hook never fires
-                setTimeout(function() {
+                setTimeout(function () {
                     console.warn("Hook timeout, forcing save...");
                     configUpdateHandler();
                 }, 2000);
@@ -389,6 +407,9 @@
             var productName = "Heavy Duty Workbench"; // Could get from PC.fe data
             var nameParts = [];
 
+            // Ambiguous choice names that should be prefixed with layer name
+            var ambiguousChoices = ["Yes", "No", "Enabled", "Disabled", "On", "Off"];
+
             // Extract non-"None" user choices (exclude visual/group layers)
             configArray.forEach(function (layer) {
                 // Only include user-selectable choices that aren't "None", "No", or empty
@@ -400,7 +421,13 @@
                     layer.name !== "" &&
                     !layer.layer_name.startsWith("Visual -")
                 ) {
-                    nameParts.push(layer.name);
+                    // For ambiguous choice names, prefix with layer name
+                    if (ambiguousChoices.indexOf(layer.name) !== -1) {
+                        nameParts.push(layer.layer_name + ": " + layer.name);
+                    } else {
+                        // For descriptive choices (like "4 Drawer Unit"), just use the choice name
+                        nameParts.push(layer.name);
+                    }
                 }
             });
 
