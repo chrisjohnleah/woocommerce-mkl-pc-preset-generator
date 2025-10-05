@@ -260,7 +260,7 @@
 
             // Click each choice in sequence (like a human would)
             var currentIndex = 0;
-            
+
             function clickNextChoice() {
                 if (currentIndex >= combination.length) {
                     // All choices clicked, now save the preset
@@ -272,42 +272,60 @@
                 currentIndex++;
 
                 // Skip null/None choices
-                if (!choice.choice_id || choice.choice_name === 'None') {
+                if (!choice.choice_id || choice.choice_name === "None") {
                     clickNextChoice();
                     return;
                 }
 
-                console.log("Clicking:", choice.layer_name, "=", choice.choice_name);
+                console.log(
+                    "Clicking:",
+                    choice.layer_name,
+                    "=",
+                    choice.choice_name,
+                );
 
-                // Find the choice element in the DOM and click it
-                var layerContent = PC.fe.getLayerContent(choice.layer_id);
-                if (layerContent && layerContent.selectChoice) {
-                    // Programmatically select the choice (triggers all the visual updates)
-                    layerContent.selectChoice(choice.choice_id, true);
+                // Find the ACTUAL DOM element for this choice and click it
+                var selector = '.choice[data-choice-id="' + choice.choice_id + '"][data-layer-id="' + choice.layer_id + '"]';
+                var $choiceElement = $(selector);
+                
+                if ($choiceElement.length) {
+                    console.log("  Found DOM element, clicking it...");
+                    // Actually click the DOM element (triggers full visual update pipeline)
+                    $choiceElement.trigger('click');
                     
                     // Wait for rendering before next choice
-                    setTimeout(clickNextChoice, 100);
+                    setTimeout(clickNextChoice, 200);
                 } else {
-                    console.warn("Could not find layer content for:", choice.layer_name);
-                    clickNextChoice();
+                    // Fallback: Try programmatic selection
+                    console.warn("  DOM element not found, using selectChoice() fallback");
+                    var layerContent = PC.fe.getLayerContent(choice.layer_id);
+                    if (layerContent && layerContent.selectChoice) {
+                        layerContent.selectChoice(choice.choice_id, true);
+                        setTimeout(clickNextChoice, 200);
+                    } else {
+                        console.warn("Could not select:", choice.layer_name);
+                        clickNextChoice();
+                    }
                 }
             }
 
             function saveCurrentConfiguration(finalCallback) {
                 // Wait for final rendering to complete
-                setTimeout(function() {
+                setTimeout(function () {
                     console.log("All choices clicked, now saving preset...");
-                    
+
                     // Get complete configuration from the now-rendered configurator
                     var completeConfig = PC.fe.save_data.save();
                     var configArray = JSON.parse(completeConfig);
-                    
+
                     // Generate unique name from all selected options
                     var generatedName = generatePresetName(configArray);
                     console.log("Generated preset name:", generatedName);
 
                     // Fill in the preset name field
-                    var $presetInput = $('.mkl_pc_admin input[name="new_preset_title"]');
+                    var $presetInput = $(
+                        '.mkl_pc_admin input[name="new_preset_title"]',
+                    );
                     $presetInput.val(generatedName);
 
                     // Create mock element for the save workflow
@@ -322,9 +340,14 @@
                             console.log("✓ Preset saved:", generatedName);
 
                             // Trigger image generation (screenshot of configurator)
-                            if (response.save_image_async && PC.fe.saveYourDesign) {
+                            if (
+                                response.save_image_async &&
+                                PC.fe.saveYourDesign
+                            ) {
                                 console.log("Generating screenshot...");
-                                PC.fe.saveYourDesign.saveImage(response.save_image_async);
+                                PC.fe.saveYourDesign.saveImage(
+                                    response.save_image_async,
+                                );
                                 setTimeout(finalCallback, 1500); // Wait for image generation
                             } else {
                                 finalCallback();
