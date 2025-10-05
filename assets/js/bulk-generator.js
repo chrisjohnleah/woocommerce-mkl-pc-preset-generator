@@ -297,11 +297,22 @@
                                 "✓ Preset saved successfully:",
                                 generatedName,
                             );
+                            
+                            // CRITICAL: Trigger image generation if needed
+                            // The existing workflow returns save_image_async flag
+                            if (response.save_image_async && PC.fe.saveYourDesign) {
+                                console.log("Triggering image generation for preset...");
+                                PC.fe.saveYourDesign.saveImage(response.save_image_async);
+                                
+                                // Wait for image to generate before continuing
+                                setTimeout(callback, 1000);
+                            } else {
+                                callback();
+                            }
                         } else {
                             console.warn("✗ Failed to save preset:", response);
+                            callback();
                         }
-                        // Continue to next combination
-                        callback();
                     });
 
                     // Use the EXISTING saveDesign workflow (same as manual preset creation)
