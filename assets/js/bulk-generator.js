@@ -191,8 +191,27 @@
                             totalGenerated.toLocaleString(),
                         );
 
-                        // Continue if not complete
-                        if (!response.data.is_complete) {
+                        // HYBRID APPROACH: If backend sent a valid combination, expand it using PC.fe
+                        if (response.data.valid_combination && PC && PC.fe && PC.fe.save_data) {
+                            expandAndSavePreset(
+                                productId,
+                                response.data.valid_combination,
+                                response.data.preset_name,
+                                function() {
+                                    // After saving, continue with next batch
+                                    if (!response.data.is_complete) {
+                                        processBatch(
+                                            productId,
+                                            response.data.offset,
+                                            totalGenerated,
+                                        );
+                                    } else {
+                                        finishGeneration(totalGenerated, response.data.message);
+                                    }
+                                }
+                            );
+                        } else if (!response.data.is_complete) {
+                            // No valid combination in this batch, continue
                             processBatch(
                                 productId,
                                 response.data.offset,
@@ -200,48 +219,7 @@
                             );
                         } else {
                             // Complete!
-                            var completionMessage =
-                                MKL_PC_BulkGenerator.strings.complete + " (" +
-                                totalGenerated + " valid presets saved)";
-
-                            if (response.data.message) {
-                                completionMessage += " - " +
-                                    response.data.message;
-                            }
-
-                            $progressStatus.text(completionMessage);
-                            $progressBar.css("width", "100%").text("100%");
-
-                            // Re-enable buttons
-                            $estimateBtn.prop("disabled", false);
-                            $generateBtn.prop("disabled", false);
-                            $deleteBtn.prop("disabled", false);
-
-                            // Update existing count
-                            $container.find('[data-stat="existing"]').text(
-                                totalGenerated.toLocaleString(),
-                            );
-
-                            // Reload configurations list
-                            if (window.PC_Presets_Configurations) {
-                                // Fetch fresh data
-                                $.ajax({
-                                    url: ajaxurl,
-                                    type: "GET",
-                                    data: {
-                                        action: "mkl_pc_get_content",
-                                        data: "configurations",
-                                        id: productId,
-                                        status: "preset",
-                                    },
-                                    success: function (configs) {
-                                        if (configs && Array.isArray(configs)) {
-                                            window.PC_Presets_Configurations
-                                                .reset(configs);
-                                        }
-                                    },
-                                });
-                            }
+                            finishGeneration(totalGenerated, response.data.message);
                         }
                     } else {
                         alert(
@@ -260,6 +238,100 @@
                     $deleteBtn.prop("disabled", false);
                 },
             });
+        }
+
+        // Expand combination using PC.fe and save it
+        function expandAndSavePreset(productId, combination, presetName, callback) {
+            console.log('Expanding combination:', combination);
+            
+            // Apply combination to configurator (this triggers visual layer updates)
+            PC.fe.setConfig(combination);
+            
+            // Wait a moment for conditional logic to process
+            setTimeout(function() {
+                // Get complete configuration from PC.fe (includes all visual layers)
+                var completeConfig = PC.fe.save_data.save();
+                
+                console.log('Expanded configuration:', completeConfig);
+                
+                // Send to backend for saving
+                $.ajax({
+                    url: MKL_PC_BulkGenerator.ajax_url,
+                    type: 'POST',
+                    data: {
+                        action: 'mkl_pc_save_expanded_preset',
+                        nonce: MKL_PC_BulkGenerator.nonce,
+                        product_id: productId,
+                        preset_name: presetName,
+                        configuration: completeConfig
+                    },
+                    success: function(saveResponse) {
+                        if (saveResponse.success) {
+                            console.log('Saved preset #' + saveResponse.data.preset_id);
+                            callback();
+                        } else {
+                            console.error('Failed to save preset:', saveResponse.data.message);
+                            callback();
+                        }
+                    },
+                    error: function(xhr, status, error) {
+                        console.error('Error saving preset:', error);
+                        callback();
+                    }
+                });
+            }, 100); // 100ms delay for conditional logic to process
+        }
+
+        function finishGeneration(totalGenerated, message) {
+            var $container = $(".mkl-pc-bulk-generator");
+            var $estimateBtn = $container.find(".mkl-pc-estimate-btn");
+            var $generateBtn = $container.find(".mkl-pc-generate-btn");
+            var $deleteBtn = $container.find(".mkl-pc-delete-all-btn");
+            var $progress = $container.find(".mkl-pc-bulk-generator-progress");
+            var $progressBar = $progress.find(".progress-bar");
+            var $progressStatus = $progress.find(".progress-status");
+
+            var completionMessage =
+                MKL_PC_BulkGenerator.strings.complete + " (" +
+                totalGenerated + " valid presets saved)";
+
+            if (message) {
+                completionMessage += " - " + message;
+            }
+
+            $progressStatus.text(completionMessage);
+            $progressBar.css("width", "100%").text("100%");
+
+            // Re-enable buttons
+            $estimateBtn.prop("disabled", false);
+            $generateBtn.prop("disabled", false);
+            $deleteBtn.prop("disabled", false);
+
+            // Update existing count
+            $container.find('[data-stat="existing"]').text(
+                totalGenerated.toLocaleString(),
+            );
+
+            // Reload configurations list
+            if (window.PC_Presets_Configurations) {
+                // Fetch fresh data
+                $.ajax({
+                    url: ajaxurl,
+                    type: "GET",
+                    data: {
+                        action: "mkl_pc_get_content",
+                        data: "configurations",
+                        id: productId,
+                        status: "preset",
+                    },
+                    success: function (configs) {
+                        if (configs && Array.isArray(configs)) {
+                            window.PC_Presets_Configurations
+                                .reset(configs);
+                        }
+                    },
+                });
+            }
         }
     }
 })(jQuery, _);

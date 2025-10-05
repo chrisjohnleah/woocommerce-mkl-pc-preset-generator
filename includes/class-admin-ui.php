@@ -38,6 +38,7 @@ class MKL_PC_Preset_Generator_Admin_UI
         // AJAX handlers
         add_action('wp_ajax_mkl_pc_generate_presets_estimate', [$this, 'ajax_estimate']);
         add_action('wp_ajax_mkl_pc_generate_presets_batch', [$this, 'ajax_generate_batch']);
+        add_action('wp_ajax_mkl_pc_save_expanded_preset', [$this, 'ajax_save_expanded_preset']);
         add_action('wp_ajax_mkl_pc_delete_all_presets', [$this, 'ajax_delete_all']);
     }
 
