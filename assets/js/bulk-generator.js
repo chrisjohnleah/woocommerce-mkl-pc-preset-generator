@@ -249,6 +249,68 @@
             });
         }
 
+        // Preload all configurator images for instant rendering
+        function preloadConfiguratorImages(callback) {
+            console.log("🖼️ Preloading all configurator images...");
+            var imageUrls = [];
+            
+            // Collect all choice images from all layers
+            if (PC.fe.layers) {
+                PC.fe.layers.each(function(layer) {
+                    var choices = layer.get('choices');
+                    if (choices) {
+                        choices.each(function(choice) {
+                            // Get the main image
+                            var mainImage = choice.get_image();
+                            if (mainImage) imageUrls.push(mainImage);
+                            
+                            // Get thumbnail if different
+                            var thumbnail = choice.get_image('thumbnail');
+                            if (thumbnail && thumbnail !== mainImage) {
+                                imageUrls.push(thumbnail);
+                            }
+                            
+                            // Get angles (different views)
+                            var angles = choice.get('angles');
+                            if (angles && angles.length) {
+                                angles.forEach(function(angle) {
+                                    if (angle.image && angle.image.large) {
+                                        imageUrls.push(angle.image.large);
+                                    }
+                                });
+                            }
+                        });
+                    }
+                });
+            }
+            
+            // Remove duplicates
+            imageUrls = Array.from(new Set(imageUrls));
+            
+            console.log("  Found " + imageUrls.length + " images to preload");
+            
+            if (imageUrls.length === 0) {
+                callback();
+                return;
+            }
+            
+            // Preload all images
+            var loadedCount = 0;
+            var totalCount = imageUrls.length;
+            
+            imageUrls.forEach(function(url) {
+                var img = new Image();
+                img.onload = img.onerror = function() {
+                    loadedCount++;
+                    if (loadedCount === totalCount) {
+                        console.log("✓ All images preloaded!");
+                        callback();
+                    }
+                };
+                img.src = url;
+            });
+        }
+
         // Simulate human interaction: CLICK each choice, then CLICK save
         function expandAndSavePreset(
             productId,
