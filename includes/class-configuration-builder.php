@@ -1,4 +1,5 @@
 <?php
+
 /**
  * Configuration Builder
  * 
@@ -47,12 +48,12 @@ class MKL_PC_Configuration_Builder
 
         // Build complete configuration by processing all layers
         $complete_config = [];
-        
+
         foreach ($this->all_layers as $layer) {
             $layer_id = $layer['_id'];
             $layer_type = isset($layer['type']) ? $layer['type'] : 'simple';
             $layer_name = isset($layer['name']) ? $layer['name'] : '';
-            
+
             // Skip if layer is hidden by conditional logic
             // We'll check this based on the user's selections
             if (!$this->is_layer_visible($layer, $user_selection_map)) {
@@ -83,7 +84,7 @@ class MKL_PC_Configuration_Builder
                 // Visual/display layers (not user-selectable)
                 // Find the active choice based on conditional logic
                 $active_choice = $this->find_active_visual_choice($layer, $choices, $user_selection_map);
-                
+
                 if ($active_choice) {
                     $image_id = $this->get_choice_image_id($active_choice);
                     $complete_config[] = [
@@ -100,7 +101,7 @@ class MKL_PC_Configuration_Builder
                 // User-selectable layers (Colour, Size, Worktop, etc.)
                 if (isset($user_selection_map[$layer_id])) {
                     $choice_id = $user_selection_map[$layer_id];
-                    
+
                     // Find the choice details
                     $selected_choice = null;
                     foreach ($choices as $choice) {
@@ -109,7 +110,7 @@ class MKL_PC_Configuration_Builder
                             break;
                         }
                     }
-                    
+
                     if ($selected_choice) {
                         $complete_config[] = [
                             'is_choice' => true,
@@ -120,7 +121,7 @@ class MKL_PC_Configuration_Builder
                             'image' => '', // User layers have empty string for image
                             'name' => isset($selected_choice['name']) ? $selected_choice['name'] : '',
                         ];
-                        
+
                         // Add SKU if present
                         if (isset($selected_choice['sku']) && $selected_choice['sku']) {
                             end($complete_config);
@@ -141,11 +142,11 @@ class MKL_PC_Configuration_Builder
     private function load_product_data()
     {
         $this->all_layers = $this->db->get('layers', $this->product_id);
-        
+
         // Get content ID (for simple products, it's the product ID itself)
         $content_id = $this->db->get_product_id_for_content($this->product_id, 0);
         $content = $this->db->get('content', $content_id);
-        
+
         // Create a map of layer content for easy lookup
         $this->all_content = [];
         if ($content && is_array($content)) {
@@ -183,19 +184,19 @@ class MKL_PC_Configuration_Builder
     {
         // For visual layers, conditional logic determines which choice is active
         // The choice name often matches the user's selection (e.g., "Red" colour -> "Red" frame)
-        
+
         // First, try to find a choice that matches a user selection
         // This is a heuristic - the actual logic is in conditional rules
         foreach ($choices as $choice) {
             $choice_name = isset($choice['name']) ? $choice['name'] : '';
-            
+
             // Check if this choice matches any user selection
             foreach ($user_selection_map as $user_layer_id => $user_choice_id) {
                 $user_layer_content = $this->get_layer_content($user_layer_id);
                 if (!$user_layer_content || !isset($user_layer_content['choices'])) {
                     continue;
                 }
-                
+
                 foreach ($user_layer_content['choices'] as $user_choice) {
                     if ($user_choice['_id'] == $user_choice_id) {
                         $user_choice_name = isset($user_choice['name']) ? $user_choice['name'] : '';
@@ -207,7 +208,7 @@ class MKL_PC_Configuration_Builder
                 }
             }
         }
-        
+
         // If no match found, return the first choice
         return isset($choices[0]) ? $choices[0] : null;
     }
@@ -227,13 +228,13 @@ class MKL_PC_Configuration_Builder
                     }
                 }
             }
-            
+
             // If no specific angle, try first image
             if (isset($choice['images'][0]['image']['id'])) {
                 return intval($choice['images'][0]['image']['id']);
             }
         }
-        
+
         return 0;
     }
 }

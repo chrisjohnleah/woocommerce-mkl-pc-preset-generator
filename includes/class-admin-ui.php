@@ -487,21 +487,11 @@ class MKL_PC_Preset_Generator_Admin_UI
                     continue;
                 }
 
-                // Save preset
-                $result = $saver->save_preset($combination, [
-                    'skip_duplicates' => true,
-                ]);
-
-                if (! is_wp_error($result)) {
-                    $saved++;
-                    $last_valid_combination = $combination;
-                    if ($saved <= 3) {
-                        error_log("Successfully saved preset #$saved with ID: $result");
-                    }
-                } else {
-                    error_log("Failed to save preset: " . $result->get_error_message());
-                    $skipped++;
-                }
+                // Return combination to frontend for expansion and saving
+                // The frontend will use PC.fe.setConfig() + PC.fe.save_data.save()
+                // to get the complete configuration with all visual layers
+                $saved++;
+                $last_valid_combination = $combination;
             }
 
             $new_offset = $offset + $batch_size;
