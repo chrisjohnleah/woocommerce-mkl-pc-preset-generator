@@ -1,0 +1,259 @@
+<?php
+
+/**
+ * Preset Saver
+ * 
+ * Saves valid combinations as presets
+ */
+
+if (! defined('ABSPATH')) {
+    exit;
+}
+
+class MKL_PC_Preset_Saver
+{
+
+    private $product_id;
+
+    /**
+     * Constructor
+     */
+    public function __construct($product_id)
+    {
+        $this->product_id = $product_id;
+    }
+
+    /**
+     * Save a combination as a preset
+     * 
+     * @param array $combination Array of selected choices
+     * @param array $options Additional options (e.g., name_prefix)
+     * @return int|WP_Error Preset ID on success, WP_Error on failure
+     */
+    public function save_preset($combination, $options = [])
+    {
+        // Generate preset name
+        $preset_name = $this->generate_preset_name($combination, $options);
+
+        // Check if preset with this name already exists
+        if ($this->preset_exists($preset_name)) {
+            // Optionally skip or append number
+            if (isset($options['skip_duplicates']) && $options['skip_duplicates']) {
+                return new WP_Error('duplicate', __('Preset with this configuration already exists', 'mkl-pc-preset-generator'));
+            }
+
+            // Append number to make unique
+            $preset_name = $this->make_unique_name($preset_name);
+        }
+
+        // Convert combination to configurator format
+        $configuration_data = $this->combination_to_configuration($combination);
+
+        error_log("Attempting to save preset: $preset_name");
+        error_log("Configuration data: " . json_encode($configuration_data));
+
+        // Create preset configuration object
+        try {
+            $preset = new Mkl_PC_Preset_Configuration(0);
+            // Disable image saving for bulk generation (huge performance improvement)
+            $preset->should_save_image = false;
+            error_log("Created preset object, image saving disabled");
+        } catch (Exception $e) {
+            error_log("Error creating preset object: " . $e->getMessage());
+            return new WP_Error('create_failed', $e->getMessage());
+        }
+
+        // WordPress wp_insert_post() expects post_content to be a STRING, not an array!
+        // We need to JSON-encode the configuration data
+        $content_string = is_array($configuration_data) ? wp_json_encode($configuration_data) : $configuration_data;
+
+        error_log("Calling preset->save() with JSON string length: " . strlen($content_string));
+
+        // Save preset using the standard save method
+        try {
+            $saved = $preset->save([
+                'content' => $content_string,  // Must be JSON string for wp_insert_post!
+                'product_id' => $this->product_id,
+                'customer_id' => get_current_user_id(),
+                'title' => $preset_name,
+                'configuration_id' => 0,
+            ]);
+        } catch (Exception $e) {
+            error_log("Exception during save: " . $e->getMessage());
+            error_log("Stack trace: " . $e->getTraceAsString());
+            return new WP_Error('save_exception', $e->getMessage());
+        }
+
+        error_log("Save returned: " . print_r($saved, true));
+
+        if (! isset($saved['saved']) || ! $saved['saved']) {
+            $error_msg = isset($saved['error']) ? $saved['error'] : 'Unknown error';
+            error_log("Save failed: $error_msg");
+            return new WP_Error('save_failed', __('Failed to save preset: ', 'mkl-pc-preset-generator') . $error_msg);
+        }
+
+        $preset_id = isset($saved['ID']) ? $saved['ID'] : 0;
+
+        if (! $preset_id) {
+            return new WP_Error('no_id', __('Preset ID not returned', 'mkl-pc-preset-generator'));
+        }
+
+        // Ensure post status is 'preset'
+        wp_update_post([
+            'ID' => $preset_id,
+            'post_status' => 'preset',
+        ]);
+
+        return $preset_id;
+    }
+
+    /**
+     * Convert combination array to configurator configuration format
+     * 
+     * @param array $combination
+     * @return array
+     */
+    private function combination_to_configuration($combination)
+    {
+        $configuration = [];
+
+        foreach ($combination as $choice) {
+            // Skip null selections (no choice made for this layer)
+            if ($choice['choice_id'] === null) {
+                continue;
+            }
+
+            $configuration[] = [
+                'is_choice' => true,
+                'layer_id' => $choice['layer_id'],
+                'choice_id' => $choice['choice_id'],
+                'angle_id' => 1, // Default angle
+                'layer_name' => $choice['layer_name'],
+                'name' => $choice['choice_name'],
+                'image' => 0,
+            ];
+        }
+
+        return $configuration;
+    }
+
+    /**
+     * Generate a descriptive name for the preset
+     * 
+     * @param array $combination
+     * @param array $options
+     * @return string
+     */
+    private function generate_preset_name($combination, $options = [])
+    {
+        // Get product name for prefix
+        $product = wc_get_product($this->product_id);
+        $product_prefix = $product ? $product->get_name() . ' - ' : '';
+
+        $prefix = isset($options['name_prefix']) ? $options['name_prefix'] : $product_prefix;
+        $separator = isset($options['name_separator']) ? $options['name_separator'] : ' - ';
+
+        // Build name from selected choices
+        $name_parts = [];
+
+        foreach ($combination as $choice) {
+            if ($choice['choice_id'] !== null && $choice['choice_name'] !== 'None') {
+                $name_parts[] = $choice['choice_name'];
+            }
+        }
+
+        $name = implode($separator, $name_parts);
+
+        if ($prefix) {
+            $name = $prefix . $name;
+        }
+
+        // Truncate if too long (WordPress post title limit)
+        if (strlen($name) > 200) {
+            $name = substr($name, 0, 197) . '...';
+        }
+
+        return $name;
+    }
+
+    /**
+     * Check if preset with given name already exists for this product
+     * 
+     * @param string $name
+     * @return bool
+     */
+    private function preset_exists($name)
+    {
+        $existing = get_posts([
+            'post_type' => 'mkl_pc_configuration',
+            'post_status' => 'preset',
+            'post_parent' => $this->product_id,
+            'title' => $name,
+            'posts_per_page' => 1,
+        ]);
+
+        return ! empty($existing);
+    }
+
+    /**
+     * Make preset name unique by appending number
+     * 
+     * @param string $name
+     * @return string
+     */
+    private function make_unique_name($name)
+    {
+        $counter = 1;
+        $original_name = $name;
+
+        while ($this->preset_exists($name)) {
+            $counter++;
+            $name = $original_name . ' (' . $counter . ')';
+        }
+
+        return $name;
+    }
+
+    /**
+     * Delete all presets for this product
+     * 
+     * @return int Number of presets deleted
+     */
+    public function delete_all_presets()
+    {
+        $presets = get_posts([
+            'post_type' => 'mkl_pc_configuration',
+            'post_status' => 'preset',
+            'post_parent' => $this->product_id,
+            'posts_per_page' => -1,
+            'fields' => 'ids',
+        ]);
+
+        $deleted = 0;
+        foreach ($presets as $preset_id) {
+            if (wp_delete_post($preset_id, true)) {
+                $deleted++;
+            }
+        }
+
+        return $deleted;
+    }
+
+    /**
+     * Get count of existing presets for this product
+     * 
+     * @return int
+     */
+    public function get_preset_count()
+    {
+        $presets = get_posts([
+            'post_type' => 'mkl_pc_configuration',
+            'post_status' => 'preset',
+            'post_parent' => $this->product_id,
+            'posts_per_page' => -1,
+            'fields' => 'ids',
+        ]);
+
+        return count($presets);
+    }
+}
