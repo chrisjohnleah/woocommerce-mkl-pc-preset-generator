@@ -274,24 +274,29 @@
                     "MKL/PC/BulkGenerator/setConfig",
                 );
 
-                // Force viewer layers to update (trigger re-render)
-                if (PC.fe.layers) {
-                    console.log("Forcing viewer layer updates...");
-                    PC.fe.layers.each(function(layer) {
-                        layer.trigger('change:active');
+                // Debug: Check if viewer layers are active
+                console.log("Checking active layers in viewer...");
+                if (PC.fe.modal && PC.fe.modal.viewer && PC.fe.modal.viewer.layers) {
+                    var activeLayers = 0;
+                    $.each(PC.fe.modal.viewer.layers, function(id, layer) {
+                        if (layer && layer.model && layer.model.get('active')) {
+                            activeLayers++;
+                            console.log("  Active layer:", layer.model.get('layerId'));
+                        }
                     });
+                    console.log("Total active visual layers:", activeLayers);
                 }
 
-                // Wait a bit more for images to load and conditional logic to process
+                // Wait for images to load and viewer to fully render
                 setTimeout(function () {
                     // Get complete configuration
                     var completeConfig = PC.fe.save_data.save();
                     var configArray = JSON.parse(completeConfig);
-                    
+
                     // Generate name from complete expanded config (includes all non-None choices)
                     var generatedName = generatePresetName(configArray);
                     console.log("Generated preset name:", generatedName);
-                    
+
                     // Create a mock element that mimics the preset admin save button
                     var mockElement = {
                         $el: $("<div>"),
@@ -305,13 +310,20 @@
                                 "✓ Preset saved successfully:",
                                 generatedName,
                             );
-                            
+
                             // CRITICAL: Trigger image generation if needed
                             // The existing workflow returns save_image_async flag
-                            if (response.save_image_async && PC.fe.saveYourDesign) {
-                                console.log("Triggering image generation for preset...");
-                                PC.fe.saveYourDesign.saveImage(response.save_image_async);
-                                
+                            if (
+                                response.save_image_async &&
+                                PC.fe.saveYourDesign
+                            ) {
+                                console.log(
+                                    "Triggering image generation for preset...",
+                                );
+                                PC.fe.saveYourDesign.saveImage(
+                                    response.save_image_async,
+                                );
+
                                 // Wait for image to generate before continuing
                                 setTimeout(callback, 1000);
                             } else {
@@ -344,27 +356,29 @@
         function generatePresetName(configArray) {
             var productName = "Heavy Duty Workbench"; // Could get from PC.fe data
             var nameParts = [];
-            
+
             // Extract non-"None" user choices (exclude visual/group layers)
-            configArray.forEach(function(layer) {
+            configArray.forEach(function (layer) {
                 // Only include user-selectable choices that aren't "None", "No", or empty
-                if (layer.is_choice && 
-                    layer.name && 
-                    layer.name !== 'None' && 
-                    layer.name !== 'No' &&
-                    layer.name !== '' &&
-                    !layer.layer_name.startsWith('Visual -')) {
+                if (
+                    layer.is_choice &&
+                    layer.name &&
+                    layer.name !== "None" &&
+                    layer.name !== "No" &&
+                    layer.name !== "" &&
+                    !layer.layer_name.startsWith("Visual -")
+                ) {
                     nameParts.push(layer.name);
                 }
             });
-            
-            var name = productName + ' - ' + nameParts.join(' - ');
-            
+
+            var name = productName + " - " + nameParts.join(" - ");
+
             // Truncate if too long
             if (name.length > 200) {
-                name = name.substring(0, 197) + '...';
+                name = name.substring(0, 197) + "...";
             }
-            
+
             return name;
         }
 
