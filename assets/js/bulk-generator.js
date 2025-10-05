@@ -258,35 +258,47 @@
         ) {
             console.log("Applying combination to configurator:", combination);
 
+            // Listen for setConfig completion hook
+            var configApplied = false;
+            var hookHandler = function() {
+                if (configApplied) return;
+                configApplied = true;
+                
+                console.log("Configuration applied and rendered, saving preset...");
+                
+                // Remove the hook listener
+                wp.hooks.removeAction('PC.fe.setConfig', 'MKL/PC/BulkGenerator/setConfig');
+                
+                // Wait a bit more for images to load and conditional logic to process
+                setTimeout(function() {
+                    // Create a mock element that mimics the preset admin save button
+                    var mockElement = {
+                        $el: $("<div>"),
+                        $input: $("<input>").val(presetName),
+                    };
+
+                    // Listen for save completion
+                    mockElement.$el.one("saved", function (event, response) {
+                        if (response && response.saved) {
+                            console.log("✓ Preset saved successfully:", presetName);
+                        } else {
+                            console.warn("✗ Failed to save preset:", response);
+                        }
+                        // Continue to next combination
+                        callback();
+                    });
+
+                    // Use the EXISTING saveDesign workflow (same as manual preset creation)
+                    // This handles: configuration collection, AJAX save, AND image generation
+                    PC.fe.saveYourDesign.saveDesign(mockElement, "preset");
+                }, 1000); // Additional delay for images to load
+            };
+            
+            // Add hook listener BEFORE applying config
+            wp.hooks.addAction('PC.fe.setConfig', 'MKL/PC/BulkGenerator/setConfig', hookHandler);
+            
             // Apply combination to configurator (this triggers visual layer updates)
             PC.fe.setConfig(combination);
-
-            // Wait for conditional logic and rendering to complete
-            setTimeout(function () {
-                console.log("Configuration applied, now saving as preset...");
-                
-                // Create a mock element that mimics the preset admin save button
-                var mockElement = {
-                    $el: $('<div>'),
-                    $input: $('<input>').val(presetName)
-                };
-                
-                // Listen for save completion
-                mockElement.$el.one('saved', function(event, response) {
-                    if (response && response.saved) {
-                        console.log('✓ Preset saved successfully:', presetName);
-                    } else {
-                        console.warn('✗ Failed to save preset:', response);
-                    }
-                    // Continue to next combination
-                    callback();
-                });
-                
-                // Use the EXISTING saveDesign workflow (same as manual preset creation)
-                // This handles: configuration collection, AJAX save, AND image generation
-                PC.fe.saveYourDesign.saveDesign(mockElement, 'preset');
-                
-            }, 800); // 800ms delay ensures rendering completes
         }
 
         function finishGeneration(totalGenerated, message) {
