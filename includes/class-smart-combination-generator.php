@@ -91,6 +91,11 @@ class MKL_PC_Smart_Combination_Generator
         }
 
         error_log("Smart Generator: Loaded " . count($this->layers) . " layers for constraint-based generation");
+        
+        // Debug: Show first 3 layers
+        foreach (array_slice($this->layers, 0, 3) as $layer) {
+            error_log("  Layer: " . $layer['name'] . " (" . count($layer['choices']) . " choices)");
+        }
     }
 
     /**
@@ -144,11 +149,25 @@ class MKL_PC_Smart_Combination_Generator
             // Final validation check
             if ($this->validator->validate_combination($current_selection)) {
                 $valid_combinations[] = $current_selection;
+                
+                // Debug: Log first valid combo
+                static $first_valid_logged = false;
+                if (!$first_valid_logged) {
+                    error_log("First valid combination found!");
+                    $first_valid_logged = true;
+                }
             }
             return;
         }
 
         $current_layer = $this->layers[$layer_index];
+        
+        // Debug: Log when exploring first layer
+        static $first_layer_logged = false;
+        if ($layer_index == 0 && !$first_layer_logged) {
+            error_log("Exploring layer 0: " . $current_layer['name'] . " with " . count($current_layer['choices']) . " choices");
+            $first_layer_logged = true;
+        }
 
         // For each possible choice in this layer
         foreach ($current_layer['choices'] as $choice) {
@@ -161,7 +180,16 @@ class MKL_PC_Smart_Combination_Generator
             ]]);
 
             // Early pruning using partial validation
-            if ($this->validator->validate_partial_combination($selection)) {
+            $is_valid_partial = $this->validator->validate_partial_combination($selection);
+            
+            // Debug first few rejections
+            static $rejection_count = 0;
+            if (!$is_valid_partial && $rejection_count < 5) {
+                error_log("PRUNED at layer $layer_index: " . json_encode($selection));
+                $rejection_count++;
+            }
+            
+            if ($is_valid_partial) {
                 $this->generate_recursive($layer_index + 1, $selection, $valid_combinations);
             }
         }
