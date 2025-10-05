@@ -327,72 +327,23 @@ class MKL_PC_Preset_Generator_Admin_UI
 
             error_log("RAW CALCULATION: " . number_format($simple_estimate) . " combinations");
 
-            // Actually count ALL valid combinations by doing a complete dry run validation
-            // This matches EXACTLY what "Generate All Presets" will do
-            $validator = new MKL_PC_Preset_Conditional_Validator($product_id);
+            // Use SMART constraint-based generation to count ONLY valid combinations
+            // This is much faster than brute-force + filter
+            $smart_generator = new MKL_PC_Smart_Combination_Generator($product_id);
             
-            $valid_count = 0;
-            $total_checked = 0;
-            $batch_size = 100;
-            $offset = 0;
             $start_time = microtime(true);
-            $max_check = 100000; // Reasonable limit: check first 100k combinations
-            
-            error_log("=== COUNTING VALID COMBINATIONS (SAMPLE) ===");
-            error_log("NOTE: Will check first " . number_format($max_check) . " combinations as a representative sample");
-            error_log("Start time: " . date('H:i:s'));
-
-            // Process combinations up to reasonable limit
-            while ($total_checked < $max_check) {
-                $combinations = $generator->generate_combinations_batch($offset, $batch_size);
-
-                if (empty($combinations)) {
-                    error_log("Reached end of combinations at offset $offset");
-                    break; // No more combinations - we've checked them all!
-                }
-
-                foreach ($combinations as $combination) {
-                    $total_checked++;
-
-                    // Check if valid (same validation as generation)
-                    if ($validator->validate_combination($combination)) {
-                        $valid_count++;
-                    }
-                }
-
-                $offset += $batch_size;
-
-                // Log progress every 5k combinations for better visibility
-                if ($total_checked % 5000 == 0) {
-                    $elapsed = round(microtime(true) - $start_time, 2);
-                    error_log("Progress: $valid_count valid out of $total_checked checked so far... ({$elapsed}s elapsed)");
-                }
-            }
-
+            $valid_count = $smart_generator->count_valid_combinations();
             $elapsed = round(microtime(true) - $start_time, 2);
-            $percentage = $total_checked > 0 ? round(($valid_count / $total_checked) * 100, 2) : 0;
-            error_log("SAMPLE COUNT: $valid_count valid out of $total_checked checked ($percentage% pass rate)");
-            error_log("Total time: {$elapsed} seconds");
-            error_log("=== END ANALYSIS ===");
+            
+            error_log("Smart generation found $valid_count valid combinations in {$elapsed}s");
             
             $existing = $saver->get_preset_count();
             
-            // Estimate total based on pass rate
-            $estimated_total = 0;
-            if ($percentage > 0) {
-                // Very rough estimate based on sample
-                $estimated_total = round($valid_count * 10); // Conservative multiplier
-            }
-            
-            $message = "Found $valid_count valid in sample of " . number_format($total_checked);
-            $message .= " ($percentage% pass rate)";
-            if ($estimated_total > 0) {
-                $message .= ". Estimated total: ~" . number_format($estimated_total);
-            }
+            $message = "Found exactly $valid_count valid combinations (smart constraint-based counting)";
 
             wp_send_json_success([
                 'valid_count' => $valid_count,
-                'total_checked' => $total_checked,
+                'total_checked' => $valid_count, // Smart gen only produces valid ones
                 'existing' => $existing,
                 'layers' => $layer_info,
                 'total_layers' => count($layers),
