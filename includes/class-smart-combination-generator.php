@@ -160,13 +160,8 @@ class MKL_PC_Smart_Combination_Generator
                 'choice_name' => isset($choice['name']) ? $choice['name'] : ''
             ]]);
 
-            // Early pruning: Check if this partial selection is valid
-            // This is the key optimization - we don't recurse into invalid branches!
-            if ($this->is_partial_valid($selection)) {
-                // Recurse to next layer
-                $this->generate_recursive($layer_index + 1, $selection, $valid_combinations);
-            }
-            // else: branch is invalid, don't recurse (saves millions of iterations!)
+            // Recurse to next layer (validation happens at the end for complete combinations)
+            $this->generate_recursive($layer_index + 1, $selection, $valid_combinations);
         }
     }
 
