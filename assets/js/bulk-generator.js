@@ -45,7 +45,7 @@
                     if (response.success) {
                         var validCount = response.data.valid_count || 0;
                         var totalChecked = response.data.total_checked || 0;
-                        
+
                         // Update stats with actual valid count
                         $container.find('[data-stat="estimated"]').text(
                             validCount.toLocaleString() + " valid",

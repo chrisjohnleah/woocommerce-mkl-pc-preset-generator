@@ -326,50 +326,50 @@ class MKL_PC_Preset_Generator_Admin_UI
             }
 
             error_log("RAW CALCULATION: " . number_format($simple_estimate) . " combinations");
-            
+
             // Actually count valid combinations by doing a dry run validation
             $validator = new MKL_PC_Preset_Conditional_Validator($product_id);
-            
+
             $valid_count = 0;
             $total_checked = 0;
             $batch_size = 100;
             $offset = 0;
             $max_to_check = 50000; // Don't check more than this during estimate
             $max_valid = 10000; // Stop after finding this many valid ones
-            
+
             error_log("=== COUNTING VALID COMBINATIONS ===");
-            
+
             // Process in batches to count valid combinations
             while ($valid_count < $max_valid && $total_checked < $max_to_check) {
                 $combinations = $generator->generate_combinations_batch($offset, $batch_size);
-                
+
                 if (empty($combinations)) {
                     error_log("No more combinations at offset $offset");
                     break; // No more combinations
                 }
-                
+
                 foreach ($combinations as $combination) {
                     $total_checked++;
-                    
+
                     // Check if valid (same validation as generation)
                     if ($validator->validate_combination($combination)) {
                         $valid_count++;
                     }
-                    
+
                     // Stop if we hit the valid limit
                     if ($valid_count >= $max_valid) {
                         break;
                     }
                 }
-                
+
                 $offset += $batch_size;
             }
-            
+
             error_log("VALID COMBINATIONS FOUND: $valid_count out of $total_checked checked");
             error_log("=== END ANALYSIS ===");
-            
+
             $existing = $saver->get_preset_count();
-            
+
             $message = "Found $valid_count valid combinations";
             if ($total_checked >= $max_to_check || $valid_count >= $max_valid) {
                 $message .= " (stopped early - actual total may be higher)";

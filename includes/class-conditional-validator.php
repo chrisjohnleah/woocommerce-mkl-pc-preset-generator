@@ -32,11 +32,14 @@ class MKL_PC_Preset_Conditional_Validator
      */
     private function load_conditions()
     {
-        $this->conditions = get_post_meta($this->product_id, '_mkl_pc__conditions', true);
+        // Use the Product Configurator's DB method for consistency
+        $this->conditions = $this->db->get('conditions', $this->product_id);
 
         if (! is_array($this->conditions)) {
             $this->conditions = [];
         }
+        
+        error_log("Loaded " . count($this->conditions) . " conditions for product " . $this->product_id);
     }
 
     /**
@@ -60,6 +63,7 @@ class MKL_PC_Preset_Conditional_Validator
 
         // If no conditions, all combinations are valid
         if (empty($this->conditions)) {
+            error_log("WARNING: No conditions loaded for product " . $this->product_id . " - accepting all combinations!");
             return true;
         }
 
