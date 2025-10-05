@@ -256,35 +256,37 @@
             presetName,
             callback,
         ) {
-            console.log("Expanding combination:", combination);
+            console.log("Applying combination to configurator:", combination);
 
             // Apply combination to configurator (this triggers visual layer updates)
             PC.fe.setConfig(combination);
 
             // Wait for conditional logic and rendering to complete
             setTimeout(function () {
-                console.log("Configuration applied, now saving preset...");
+                console.log("Configuration applied, now saving as preset...");
                 
-                // Create a fake element with the preset name for the save method
-                var fakeElement = {
+                // Create a mock element that mimics the preset admin save button
+                var mockElement = {
                     $el: $('<div>'),
                     $input: $('<input>').val(presetName)
                 };
                 
-                // Bind event listener for when save completes
-                fakeElement.$el.one('saved', function(event, response) {
-                    console.log('Preset saved via existing workflow:', response);
+                // Listen for save completion
+                mockElement.$el.one('saved', function(event, response) {
+                    if (response && response.saved) {
+                        console.log('✓ Preset saved successfully:', presetName);
+                    } else {
+                        console.warn('✗ Failed to save preset:', response);
+                    }
+                    // Continue to next combination
                     callback();
                 });
                 
-                // Use the EXISTING saveDesign method that handles everything:
-                // - Gets configuration data via PC.fe.save_data.save()
-                // - Sends to backend via mkl_pc_save_configuration
-                // - Backend returns save_image_async flag
-                // - Frontend calls saveImage() which generates screenshot
-                PC.fe.saveYourDesign.saveDesign(fakeElement, 'preset');
+                // Use the EXISTING saveDesign workflow (same as manual preset creation)
+                // This handles: configuration collection, AJAX save, AND image generation
+                PC.fe.saveYourDesign.saveDesign(mockElement, 'preset');
                 
-            }, 500); // 500ms delay for rendering to complete
+            }, 800); // 800ms delay ensures rendering completes
         }
 
         function finishGeneration(totalGenerated, message) {
