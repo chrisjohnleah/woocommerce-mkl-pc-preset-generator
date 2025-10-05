@@ -508,8 +508,8 @@ class MKL_PC_Preset_Generator_Admin_UI
 
             error_log("Batch complete: Saved=$saved, Skipped=$skipped, NewOffset=$new_offset, TotalGenerated=$new_total_generated, IsComplete=" . ($is_complete ? 'YES' : 'NO'));
 
-            wp_send_json_success([
-                'saved' => $saved,
+            $response = [
+                'saved' => 0, // Will be incremented by frontend after expansion
                 'skipped' => $skipped,
                 'offset' => $new_offset,
                 'total' => $new_offset,
@@ -517,9 +517,87 @@ class MKL_PC_Preset_Generator_Admin_UI
                 'progress' => min(100, round(($new_total_generated / $SAFETY_LIMIT) * 100)),
                 'total_generated' => $new_total_generated,
                 'safety_limit' => $SAFETY_LIMIT,
-            ]);
+            ];
+            
+            // Send valid combination to frontend for expansion
+            if ($last_valid_combination) {
+                $response['valid_combination'] = $last_valid_combination;
+                $response['preset_name'] = $saver->generate_preset_name($last_valid_combination, []);
+                error_log("Sending valid combination to frontend for expansion");
+            }
+            
+            wp_send_json_success($response);
         } catch (Exception $e) {
             error_log('MKL PC Bulk Generator Batch Error: ' . $e->getMessage() . ' in ' . $e->getFile() . ':' . $e->getLine());
+            wp_send_json_error(['message' => $e->getMessage()]);
+        }
+    }
+
+    /**
+     * AJAX: Save expanded preset (called from frontend after PC.fe.save_data.save())
+     */
+    public function ajax_save_expanded_preset()
+    {
+        check_ajax_referer('mkl_pc_bulk_generator', 'nonce');
+
+        if (! current_user_can('manage_woocommerce')) {
+            wp_send_json_error(['message' => __('Insufficient permissions', 'mkl-pc-preset-generator')]);
+        }
+
+        $product_id = isset($_POST['product_id']) ? intval($_POST['product_id']) : 0;
+        $preset_name = isset($_POST['preset_name']) ? sanitize_text_field($_POST['preset_name']) : '';
+        $configuration = isset($_POST['configuration']) ? $_POST['configuration'] : '';
+
+        if (! $product_id || ! $preset_name || ! $configuration) {
+            wp_send_json_error(['message' => __('Missing required parameters', 'mkl-pc-preset-generator')]);
+        }
+
+        // Decode the configuration if it's a JSON string
+        if (is_string($configuration)) {
+            $configuration = json_decode(stripslashes($configuration), true);
+        }
+
+        error_log("Saving expanded preset: $preset_name with " . count($configuration) . " layers");
+
+        // Save directly using the Configuration class (bypass our saver's combination-to-config conversion)
+        try {
+            $preset = new Mkl_PC_Preset_Configuration(0);
+            $preset->save_image_async = true;
+            $preset->should_save_image = true;
+
+            $content_string = wp_json_encode($configuration);
+
+            $saved = $preset->save([
+                'content' => $content_string,
+                'product_id' => $product_id,
+                'customer_id' => get_current_user_id(),
+                'title' => $preset_name,
+                'configuration_id' => 0,
+            ]);
+
+            if (isset($saved['saved']) && $saved['saved']) {
+                $preset_id = $saved['ID'];
+                
+                // Ensure post status is 'preset'
+                wp_update_post([
+                    'ID' => $preset_id,
+                    'post_status' => 'preset',
+                ]);
+
+                // Trigger image generation
+                if (isset($saved['save_image_async']) && $saved['save_image_async']) {
+                    $preset->save_image($configuration, $preset_id);
+                }
+
+                error_log("Successfully saved expanded preset #$preset_id");
+                wp_send_json_success(['preset_id' => $preset_id]);
+            } else {
+                $error_msg = isset($saved['error']) ? $saved['error'] : 'Unknown error';
+                error_log("Failed to save expanded preset: $error_msg");
+                wp_send_json_error(['message' => $error_msg]);
+            }
+        } catch (Exception $e) {
+            error_log("Exception saving expanded preset: " . $e->getMessage());
             wp_send_json_error(['message' => $e->getMessage()]);
         }
     }

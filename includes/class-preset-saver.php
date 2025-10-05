@@ -175,7 +175,7 @@ class MKL_PC_Preset_Saver
      * @param array $options
      * @return string
      */
-    private function generate_preset_name($combination, $options = [])
+    public function generate_preset_name($combination, $options = [])
     {
         // Get product name for prefix
         $product = wc_get_product($this->product_id);
