@@ -249,55 +249,68 @@
             });
         }
 
-        // Expand combination using PC.fe and save it using the EXISTING save workflow
+        // Simulate human interaction: CLICK each choice, then CLICK save
         function expandAndSavePreset(
             productId,
             combination,
             presetName,
             callback,
         ) {
-            console.log("Applying combination to configurator:", combination);
+            console.log("Clicking choices to configure preset:", combination);
 
-            // Listen for setConfig completion hook
-            var configApplied = false;
-            var hookHandler = function () {
-                if (configApplied) return;
-                configApplied = true;
-
-                console.log(
-                    "Configuration applied and rendered, saving preset...",
-                );
-
-                // Remove the hook listener
-                wp.hooks.removeAction(
-                    "PC.fe.setConfig",
-                    "MKL/PC/BulkGenerator/setConfig",
-                );
-
-                // Debug: Check if viewer layers are active
-                console.log("Checking active layers in viewer...");
-                if (PC.fe.modal && PC.fe.modal.viewer && PC.fe.modal.viewer.layers) {
-                    var activeLayers = 0;
-                    $.each(PC.fe.modal.viewer.layers, function(id, layer) {
-                        if (layer && layer.model && layer.model.get('active')) {
-                            activeLayers++;
-                            console.log("  Active layer:", layer.model.get('layerId'));
-                        }
-                    });
-                    console.log("Total active visual layers:", activeLayers);
+            // Click each choice in sequence (like a human would)
+            var currentIndex = 0;
+            
+            function clickNextChoice() {
+                if (currentIndex >= combination.length) {
+                    // All choices clicked, now save the preset
+                    saveCurrentConfiguration(callback);
+                    return;
                 }
 
-                // Wait for images to load and viewer to fully render
-                setTimeout(function () {
-                    // Get complete configuration
+                var choice = combination[currentIndex];
+                currentIndex++;
+
+                // Skip null/None choices
+                if (!choice.choice_id || choice.choice_name === 'None') {
+                    clickNextChoice();
+                    return;
+                }
+
+                console.log("Clicking:", choice.layer_name, "=", choice.choice_name);
+
+                // Find the choice element in the DOM and click it
+                var layerContent = PC.fe.getLayerContent(choice.layer_id);
+                if (layerContent && layerContent.selectChoice) {
+                    // Programmatically select the choice (triggers all the visual updates)
+                    layerContent.selectChoice(choice.choice_id, true);
+                    
+                    // Wait for rendering before next choice
+                    setTimeout(clickNextChoice, 100);
+                } else {
+                    console.warn("Could not find layer content for:", choice.layer_name);
+                    clickNextChoice();
+                }
+            }
+
+            function saveCurrentConfiguration(finalCallback) {
+                // Wait for final rendering to complete
+                setTimeout(function() {
+                    console.log("All choices clicked, now saving preset...");
+                    
+                    // Get complete configuration from the now-rendered configurator
                     var completeConfig = PC.fe.save_data.save();
                     var configArray = JSON.parse(completeConfig);
-
-                    // Generate name from complete expanded config (includes all non-None choices)
+                    
+                    // Generate unique name from all selected options
                     var generatedName = generatePresetName(configArray);
                     console.log("Generated preset name:", generatedName);
 
-                    // Create a mock element that mimics the preset admin save button
+                    // Fill in the preset name field
+                    var $presetInput = $('.mkl_pc_admin input[name="new_preset_title"]');
+                    $presetInput.val(generatedName);
+
+                    // Create mock element for the save workflow
                     var mockElement = {
                         $el: $("<div>"),
                         $input: $("<input>").val(generatedName),
@@ -306,50 +319,29 @@
                     // Listen for save completion
                     mockElement.$el.one("saved", function (event, response) {
                         if (response && response.saved) {
-                            console.log(
-                                "✓ Preset saved successfully:",
-                                generatedName,
-                            );
+                            console.log("✓ Preset saved:", generatedName);
 
-                            // CRITICAL: Trigger image generation if needed
-                            // The existing workflow returns save_image_async flag
-                            if (
-                                response.save_image_async &&
-                                PC.fe.saveYourDesign
-                            ) {
-                                console.log(
-                                    "Triggering image generation for preset...",
-                                );
-                                PC.fe.saveYourDesign.saveImage(
-                                    response.save_image_async,
-                                );
-
-                                // Wait for image to generate before continuing
-                                setTimeout(callback, 1000);
+                            // Trigger image generation (screenshot of configurator)
+                            if (response.save_image_async && PC.fe.saveYourDesign) {
+                                console.log("Generating screenshot...");
+                                PC.fe.saveYourDesign.saveImage(response.save_image_async);
+                                setTimeout(finalCallback, 1500); // Wait for image generation
                             } else {
-                                callback();
+                                finalCallback();
                             }
                         } else {
-                            console.warn("✗ Failed to save preset:", response);
-                            callback();
+                            console.warn("✗ Save failed:", response);
+                            finalCallback();
                         }
                     });
 
-                    // Use the EXISTING saveDesign workflow (same as manual preset creation)
-                    // This handles: configuration collection, AJAX save, AND image generation
+                    // Save the preset (like clicking the Save button)
                     PC.fe.saveYourDesign.saveDesign(mockElement, "preset");
-                }, 1000); // Additional delay for images to load
-            };
+                }, 500); // Final delay for last layer to render
+            }
 
-            // Add hook listener BEFORE applying config
-            wp.hooks.addAction(
-                "PC.fe.setConfig",
-                "MKL/PC/BulkGenerator/setConfig",
-                hookHandler,
-            );
-
-            // Apply combination to configurator (this triggers visual layer updates)
-            PC.fe.setConfig(combination);
+            // Start clicking choices
+            clickNextChoice();
         }
 
         // Generate preset name from complete configuration (matches backend logic)
