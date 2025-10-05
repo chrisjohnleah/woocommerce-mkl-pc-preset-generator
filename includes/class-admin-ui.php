@@ -327,53 +327,50 @@ class MKL_PC_Preset_Generator_Admin_UI
 
             error_log("RAW CALCULATION: " . number_format($simple_estimate) . " combinations");
 
-            // Actually count valid combinations by doing a dry run validation
+            // Actually count ALL valid combinations by doing a complete dry run validation
+            // This matches EXACTLY what "Generate All Presets" will do
             $validator = new MKL_PC_Preset_Conditional_Validator($product_id);
-
+            
             $valid_count = 0;
             $total_checked = 0;
             $batch_size = 100;
             $offset = 0;
-            $max_to_check = 200000; // Check up to 200k combinations to get more accurate count
-            $max_valid = 50000; // Stop after finding 50k valid ones (should be plenty)
-
-            error_log("=== COUNTING VALID COMBINATIONS ===");
-
-            // Process in batches to count valid combinations
-            while ($valid_count < $max_valid && $total_checked < $max_to_check) {
+            
+            error_log("=== COUNTING ALL VALID COMBINATIONS ===");
+            error_log("NOTE: This will check EVERY combination the generator produces");
+            
+            // Process ALL combinations (no arbitrary limits)
+            while (true) {
                 $combinations = $generator->generate_combinations_batch($offset, $batch_size);
-
+                
                 if (empty($combinations)) {
-                    error_log("No more combinations at offset $offset");
-                    break; // No more combinations
+                    error_log("Reached end of combinations at offset $offset");
+                    break; // No more combinations - we've checked them all!
                 }
-
+                
                 foreach ($combinations as $combination) {
                     $total_checked++;
-
+                    
                     // Check if valid (same validation as generation)
                     if ($validator->validate_combination($combination)) {
                         $valid_count++;
                     }
-
-                    // Stop if we hit the valid limit
-                    if ($valid_count >= $max_valid) {
-                        break;
-                    }
                 }
-
+                
                 $offset += $batch_size;
+                
+                // Log progress every 10k combinations
+                if ($total_checked % 10000 == 0) {
+                    error_log("Progress: $valid_count valid out of $total_checked checked so far...");
+                }
             }
-
-            error_log("VALID COMBINATIONS FOUND: $valid_count out of $total_checked checked");
+            
+            error_log("FINAL COUNT: $valid_count valid out of $total_checked total combinations");
             error_log("=== END ANALYSIS ===");
-
+            
             $existing = $saver->get_preset_count();
-
-            $message = "Found $valid_count valid combinations";
-            if ($total_checked >= $max_to_check || $valid_count >= $max_valid) {
-                $message .= " (stopped early - actual total may be higher)";
-            }
+            
+            $message = "Found $valid_count valid combinations out of $total_checked total";
 
             wp_send_json_success([
                 'valid_count' => $valid_count,
