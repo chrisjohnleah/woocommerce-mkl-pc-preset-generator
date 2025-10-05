@@ -192,12 +192,15 @@
                         );
 
                         // HYBRID APPROACH: If backend sent a valid combination, expand it using PC.fe
-                        if (response.data.valid_combination && PC && PC.fe && PC.fe.save_data) {
+                        if (
+                            response.data.valid_combination && PC && PC.fe &&
+                            PC.fe.save_data
+                        ) {
                             expandAndSavePreset(
                                 productId,
                                 response.data.valid_combination,
                                 response.data.preset_name,
-                                function() {
+                                function () {
                                     // After saving, continue with next batch
                                     if (!response.data.is_complete) {
                                         processBatch(
@@ -206,9 +209,12 @@
                                             totalGenerated,
                                         );
                                     } else {
-                                        finishGeneration(totalGenerated, response.data.message);
+                                        finishGeneration(
+                                            totalGenerated,
+                                            response.data.message,
+                                        );
                                     }
-                                }
+                                },
                             );
                         } else if (!response.data.is_complete) {
                             // No valid combination in this batch, continue
@@ -219,7 +225,10 @@
                             );
                         } else {
                             // Complete!
-                            finishGeneration(totalGenerated, response.data.message);
+                            finishGeneration(
+                                totalGenerated,
+                                response.data.message,
+                            );
                         }
                     } else {
                         alert(
@@ -240,68 +249,41 @@
             });
         }
 
-        // Expand combination using PC.fe and save it (with screenshot)
-        function expandAndSavePreset(productId, combination, presetName, callback) {
-            console.log('Expanding combination:', combination);
-            
+        // Expand combination using PC.fe and save it using the EXISTING save workflow
+        function expandAndSavePreset(
+            productId,
+            combination,
+            presetName,
+            callback,
+        ) {
+            console.log("Expanding combination:", combination);
+
             // Apply combination to configurator (this triggers visual layer updates)
             PC.fe.setConfig(combination);
-            
+
             // Wait for conditional logic and rendering to complete
-            setTimeout(function() {
-                // Get complete configuration from PC.fe (includes all visual layers)
-                var completeConfig = PC.fe.save_data.save();
+            setTimeout(function () {
+                console.log("Configuration applied, now saving preset...");
                 
-                console.log('Expanded configuration with ' + JSON.parse(completeConfig).length + ' layers');
+                // Create a fake element with the preset name for the save method
+                var fakeElement = {
+                    $el: $('<div>'),
+                    $input: $('<input>').val(presetName)
+                };
                 
-                // First save the preset (without image)
-                $.ajax({
-                    url: MKL_PC_BulkGenerator.ajax_url,
-                    type: 'POST',
-                    data: {
-                        action: 'mkl_pc_save_expanded_preset',
-                        nonce: MKL_PC_BulkGenerator.nonce,
-                        product_id: productId,
-                        preset_name: presetName,
-                        configuration: completeConfig
-                    },
-                    success: function(saveResponse) {
-                        if (saveResponse.success) {
-                            var presetId = saveResponse.data.preset_id;
-                            console.log('Saved preset #' + presetId + ', now generating image...');
-                            
-                            // Now trigger image generation using the same method as manual save
-                            $.ajax({
-                                url: wp.ajax.settings.url,
-                                type: 'POST',
-                                data: {
-                                    action: 'mkl_pc_generate_configuration_image',
-                                    config_id: presetId,
-                                    security: PC_SYD.save_config_image_nonce
-                                },
-                                success: function(imgResponse) {
-                                    if (imgResponse.success) {
-                                        console.log('Image generated for preset #' + presetId);
-                                    } else {
-                                        console.warn('Image generation failed:', imgResponse.data);
-                                    }
-                                    callback();
-                                },
-                                error: function() {
-                                    console.warn('Image generation error for preset #' + presetId);
-                                    callback();
-                                }
-                            });
-                        } else {
-                            console.error('Failed to save preset:', saveResponse.data.message);
-                            callback();
-                        }
-                    },
-                    error: function(xhr, status, error) {
-                        console.error('Error saving preset:', error);
-                        callback();
-                    }
+                // Bind event listener for when save completes
+                fakeElement.$el.one('saved', function(event, response) {
+                    console.log('Preset saved via existing workflow:', response);
+                    callback();
                 });
+                
+                // Use the EXISTING saveDesign method that handles everything:
+                // - Gets configuration data via PC.fe.save_data.save()
+                // - Sends to backend via mkl_pc_save_configuration
+                // - Backend returns save_image_async flag
+                // - Frontend calls saveImage() which generates screenshot
+                PC.fe.saveYourDesign.saveDesign(fakeElement, 'preset');
+                
             }, 500); // 500ms delay for rendering to complete
         }
 
@@ -314,8 +296,8 @@
             var $progressBar = $progress.find(".progress-bar");
             var $progressStatus = $progress.find(".progress-status");
 
-            var completionMessage =
-                MKL_PC_BulkGenerator.strings.complete + " (" +
+            var completionMessage = MKL_PC_BulkGenerator.strings.complete +
+                " (" +
                 totalGenerated + " valid presets saved)";
 
             if (message) {
