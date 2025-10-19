@@ -1,7 +1,12 @@
 (function ($, _) {
     "use strict";
 
-    console.log("MKL PC Bulk Generator v1.0.5 loaded");
+    console.log("MKL PC Bulk Generator v1.0.6 loaded");
+    var runMetrics = null;
+    var currentRun = null;
+    var statsUpdateScheduled = false;
+    var statsTicker = null;
+    var knownPresetTitles = new Set();
 
     // Wait for PC to be ready
     wp.hooks.addAction("PC.fe.start", "MKL/PC/BulkGenerator", function (view) {
@@ -61,14 +66,388 @@
         var $progress = $container.find(".mkl-pc-bulk-generator-progress");
         var $progressBar = $progress.find(".progress-bar");
         var $progressStatus = $progress.find(".progress-status");
+        var $stopBtn = $container.find(".mkl-pc-stop-btn");
+        var $status = $container.find('[data-live="status"]');
+        var $elapsed = $container.find('[data-live="elapsed"]');
+        var $rate = $container.find('[data-live="rate"]');
+        var $avgApply = $container.find('[data-live="avg-apply"]');
+        var $avgSave = $container.find('[data-live="avg-save"]');
+        var $asyncThumbs = $container.find('[data-live="async-thumbs"]');
+        var $skipped = $container.find('[data-live="skipped-duplicates"]');
+        var $logList = $container.find('[data-live-log]');
+        var defaultGenerateLabel = $generateBtn.text();
+        var defaultEstimateLabel = $estimateBtn.text();
+        var defaultStopLabel = $stopBtn.length ? $stopBtn.text() : "Stop";
+        var defaultStatusText = MKL_PC_BulkGenerator.strings.ready ||
+            "Ready to start.";
+        var emptyLogMessage = $.trim($logList.text()) ||
+            MKL_PC_BulkGenerator.strings.log_empty ||
+            "Activity will appear here once generation starts.";
+        var logEntries = [];
+        var canGenerateAfterRun = !$generateBtn.prop("disabled");
+        var canEstimateAfterRun = !$estimateBtn.prop("disabled");
+        var canDeleteAfterRun = !$deleteBtn.prop("disabled");
+        var raf = window.requestAnimationFrame
+            ? window.requestAnimationFrame.bind(window)
+            : function (cb) {
+                return setTimeout(cb, 60);
+            };
+
+        collectExistingPresetTitles();
+        resetLiveView();
+        renderLog();
+        updateLiveStats();
+        $stopBtn.prop("disabled", true).text(defaultStopLabel);
+
+        function average(values) {
+            if (!values || !values.length) {
+                return 0;
+            }
+            var total = values.reduce(function (sum, value) {
+                return sum + value;
+            }, 0);
+            return total / values.length;
+        }
+
+        function collectExistingPresetTitles() {
+            var titles = new Set();
+            try {
+                if (
+                    window.PC_Presets_Configurations &&
+                    typeof window.PC_Presets_Configurations.each === "function"
+                ) {
+                    window.PC_Presets_Configurations.each(function (model) {
+                        var title = model && typeof model.get === "function"
+                            ? model.get("title")
+                            : null;
+                        if (title) {
+                            titles.add(String(title).trim().toLowerCase());
+                        }
+                    });
+                    knownPresetTitles = titles;
+                }
+            } catch (err) {
+                console.warn("Bulk generator: failed to collect preset titles", err);
+            }
+        }
+
+        function formatDuration(ms) {
+            if (!ms || ms < 0) {
+                return "0:00";
+            }
+            var totalSeconds = Math.floor(ms / 1000);
+            var minutes = Math.floor(totalSeconds / 60);
+            var seconds = totalSeconds % 60;
+            return minutes + ":" + (seconds < 10 ? "0" + seconds : seconds);
+        }
+
+        function renderLog() {
+            if (!$logList.length) {
+                return;
+            }
+
+            if (!logEntries.length) {
+                $logList.html(
+                    '<li class="log-entry log-entry--info"><span>' +
+                        _.escape(emptyLogMessage) +
+                        "</span></li>",
+                );
+                return;
+            }
+
+            var html = logEntries
+                .map(function (entry) {
+                    var timeText = entry.timeText ||
+                        (entry.timestamp instanceof Date
+                            ? entry.timestamp.toLocaleTimeString()
+                            : entry.timestamp);
+                    return (
+                        '<li class="log-entry log-entry--' + entry.tone + '">' +
+                        "<span>" + _.escape(entry.message) + "</span>" +
+                        '<span class="timestamp">' + _.escape(timeText) + "</span>" +
+                        "</li>"
+                    );
+                })
+                .join("");
+
+            $logList.html(html);
+            if ($logList[0] && $logList[0].scrollHeight > $logList[0].clientHeight) {
+                $logList[0].scrollTop = $logList[0].scrollHeight;
+            }
+        }
+
+        function appendLog(message, tone, options) {
+            if (!$logList.length) {
+                return;
+            }
+            options = options || {};
+
+            if (
+                !options.force &&
+                runMetrics &&
+                runMetrics.totalPresets > 5 &&
+                runMetrics.totalPresets % 10 !== 0
+            ) {
+                return;
+            }
+
+            var entry = {
+                message: message,
+                tone: tone || "info",
+                timestamp: new Date(),
+            };
+            entry.timeText = entry.timestamp.toLocaleTimeString();
+
+            logEntries.push(entry);
+            if (logEntries.length > 12) {
+                logEntries.shift();
+            }
+            renderLog();
+        }
+
+        function setStatus(text, tone) {
+            if (!$status.length) {
+                return;
+            }
+            tone = tone || "info";
+            $status
+                .removeClass("status--info status--success status--warn status--error")
+                .addClass("status--" + tone)
+                .text(text);
+        }
+
+        function resetLiveView() {
+            setStatus(defaultStatusText, "info");
+            logEntries = [];
+            renderLog();
+            $elapsed.text("0:00");
+            $rate.text("0");
+            $avgApply.text("-");
+            $avgSave.text("-");
+            $asyncThumbs.text("0");
+            if ($skipped.length) {
+                $skipped.text("0");
+            }
+        }
+
+        function captureButtonState() {
+            canGenerateAfterRun = !$generateBtn.prop("disabled");
+            canEstimateAfterRun = !$estimateBtn.prop("disabled");
+            canDeleteAfterRun = !$deleteBtn.prop("disabled");
+        }
+
+        function setRunningState(isRunning) {
+            if (isRunning) {
+                captureButtonState();
+                $estimateBtn.prop("disabled", true);
+                $generateBtn
+                    .prop("disabled", true)
+                    .text(MKL_PC_BulkGenerator.strings.generating || "Generating...");
+                $deleteBtn.prop("disabled", true);
+                if ($stopBtn.length) {
+                    $stopBtn.prop("disabled", false).text(
+                        defaultStopLabel || "Stop Run",
+                    );
+                }
+            } else {
+                $estimateBtn.prop("disabled", !canEstimateAfterRun);
+                $generateBtn
+                    .prop("disabled", !canGenerateAfterRun)
+                    .text(defaultGenerateLabel);
+                $deleteBtn.prop("disabled", !canDeleteAfterRun);
+                if ($stopBtn.length) {
+                    $stopBtn.prop("disabled", true).text(defaultStopLabel || "Stop Run");
+                }
+            }
+            scheduleStatsUpdate();
+        }
+
+        function scheduleStatsUpdate() {
+            if (statsUpdateScheduled) {
+                return;
+            }
+
+            statsUpdateScheduled = true;
+            raf(function () {
+                statsUpdateScheduled = false;
+                updateLiveStats();
+            });
+        }
+
+        function updateLiveStats() {
+            if (!runMetrics) {
+                $elapsed.text("0:00");
+                $rate.text("0");
+                $avgApply.text("-");
+                $avgSave.text("-");
+                $asyncThumbs.text("0");
+                if ($skipped.length) {
+                    $skipped.text("0");
+                }
+                return;
+            }
+
+            var now = typeof performance !== "undefined" && performance.now
+                ? performance.now()
+                : Date.now();
+
+            var elapsedMs = Math.max(0, now - runMetrics.startedAt);
+            var perMinute = elapsedMs > 0
+                ? runMetrics.totalPresets / (elapsedMs / 60000)
+                : 0;
+
+            $elapsed.text(formatDuration(elapsedMs));
+            $rate.text(perMinute > 0 ? perMinute.toFixed(1) : "0");
+            $avgApply.text(
+                runMetrics.applyDurations.length
+                    ? Math.round(average(runMetrics.applyDurations)) + " ms"
+                    : "-",
+            );
+            $avgSave.text(
+                runMetrics.saveDurations.length
+                    ? Math.round(average(runMetrics.saveDurations)) + " ms"
+                    : "-",
+            );
+            $asyncThumbs.text(
+                runMetrics.asyncThumbnails
+                    ? runMetrics.asyncThumbnails.toString()
+                    : "0",
+            );
+            if ($skipped.length) {
+                $skipped.text(
+                    runMetrics.skippedDuplicates
+                        ? runMetrics.skippedDuplicates.toString()
+                        : "0",
+                );
+            }
+        }
+
+        function cancelRun() {
+            if (!currentRun || currentRun.cancelled) {
+                return;
+            }
+            currentRun.cancelled = true;
+            setStatus(
+                MKL_PC_BulkGenerator.strings.cancelling || "Cancelling...",
+                "warn",
+            );
+            appendLog(
+                "Cancellation requested. Finishing current preset...",
+                "warn",
+                { force: true },
+            );
+            if ($stopBtn.length) {
+                $stopBtn
+                    .prop("disabled", true)
+                    .text(MKL_PC_BulkGenerator.strings.cancelling || "Cancelling...");
+            }
+            scheduleStatsUpdate();
+        }
+
+        function isRunCancelled() {
+            return !!(currentRun && currentRun.cancelled);
+        }
+
+        function markRunFinished() {
+            if (statsTicker) {
+                clearInterval(statsTicker);
+                statsTicker = null;
+            }
+            if (currentRun) {
+                currentRun.finished = true;
+            }
+            scheduleStatsUpdate();
+        }
+
+        function startRun(productId) {
+            if (!productId) {
+                return;
+            }
+
+            if (currentRun && !currentRun.finished && !currentRun.cancelled) {
+                return;
+            }
+
+            collectExistingPresetTitles();
+            resetLiveView();
+            setRunningState(true);
+
+            var generatingLabel = MKL_PC_BulkGenerator.strings.generating ||
+                "Generating presets...";
+            setStatus(generatingLabel, "info");
+            appendLog(
+                "Generation started for product #" + productId + ".",
+                "info",
+                { force: true },
+            );
+
+            var now = typeof performance !== "undefined" && performance.now
+                ? performance.now()
+                : Date.now();
+
+            runMetrics = window.MKL_PC_BulkMetrics = {
+                startedAt: now,
+                preloads: [],
+                batches: [],
+                applyDurations: [],
+                saveDurations: [],
+                totalPresets: 0,
+                asyncThumbnails: 0,
+                skippedDuplicates: 0,
+            };
+
+            currentRun = {
+                productId: productId,
+                cancelled: false,
+                finished: false,
+            };
+
+            if (statsTicker) {
+                clearInterval(statsTicker);
+            }
+            statsTicker = setInterval(function () {
+                if (runMetrics && (!currentRun || !currentRun.finished)) {
+                    updateLiveStats();
+                }
+            }, 1000);
+
+            $progress.addClass("active");
+            $progressBar.css("width", "0%").text("0%");
+            $progressStatus.text(generatingLabel);
+            $container.find('[data-stat="generated"]').text("0");
+
+            scheduleStatsUpdate();
+            processBatch(productId, 0, 0);
+        }
+
+        if ($stopBtn.length) {
+            $stopBtn.on("click", cancelRun);
+        }
 
         // Estimate button
         $estimateBtn.on("click", function () {
             var productId = $(this).data("product-id");
+            if (!productId) {
+                return;
+            }
 
-            $estimateBtn.prop("disabled", true).text(
-                "Counting... Please wait",
+            setStatus(
+                MKL_PC_BulkGenerator.strings.estimating ||
+                    "Estimating combinations...",
+                "info",
             );
+            appendLog(
+                "Estimating valid combinations...",
+                "info",
+                { force: true },
+            );
+
+            $estimateBtn
+                .prop("disabled", true)
+                .text(
+                    MKL_PC_BulkGenerator.strings.estimating ||
+                        "Estimating...",
+                );
 
             $.ajax({
                 url: MKL_PC_BulkGenerator.ajax_url,
@@ -81,9 +460,7 @@
                 success: function (response) {
                     if (response.success) {
                         var validCount = response.data.valid_count || 0;
-                        var totalChecked = response.data.total_checked || 0;
 
-                        // Update stats with actual valid count
                         $container.find('[data-stat="estimated"]').text(
                             validCount.toLocaleString() + " valid",
                         );
@@ -91,25 +468,63 @@
                             response.data.existing.toLocaleString(),
                         );
 
-                        // Enable generate button
                         $generateBtn.prop("disabled", false);
+                        canGenerateAfterRun = true;
 
-                        // Show message
-                        alert(response.data.message);
+                        var successMessage = response.data.message ||
+                            "Estimate complete.";
+                        setStatus(successMessage, "success");
+                        appendLog(
+                            "Estimate complete: " +
+                                validCount.toLocaleString() +
+                                " valid presets.",
+                            "success",
+                            { force: true },
+                        );
+                        scheduleStatsUpdate();
+
+                        if (response.data.message) {
+                            alert(response.data.message);
+                        }
                     } else {
+                        var errorMessage = response.data &&
+                                response.data.message
+                            ? response.data.message
+                            : MKL_PC_BulkGenerator.strings.error;
+                        setStatus(
+                            (MKL_PC_BulkGenerator.strings.error || "Error") +
+                                ": " +
+                                errorMessage,
+                            "error",
+                        );
+                        appendLog(
+                            "Estimate failed: " + errorMessage,
+                            "error",
+                            { force: true },
+                        );
                         alert(
-                            MKL_PC_BulkGenerator.strings.error + ": " +
-                                response.data.message,
+                            (MKL_PC_BulkGenerator.strings.error || "Error") +
+                                ": " +
+                                errorMessage,
                         );
                     }
                 },
                 error: function () {
-                    alert(MKL_PC_BulkGenerator.strings.error);
+                    var errorText = MKL_PC_BulkGenerator.strings.error ||
+                        "An error occurred";
+                    setStatus(errorText, "error");
+                    appendLog(
+                        "Estimate failed: " + errorText,
+                        "error",
+                        { force: true },
+                    );
+                    alert(errorText);
                 },
                 complete: function () {
-                    $estimateBtn.prop("disabled", false).text(
-                        "Estimate Combinations",
-                    );
+                    $estimateBtn
+                        .prop("disabled", false)
+                        .text(defaultEstimateLabel);
+                    scheduleStatsUpdate();
                 },
             });
         });
@@ -117,27 +532,20 @@
         // Generate button
         $generateBtn.on("click", function () {
             var productId = $(this).data("product-id");
-
-            // Confirm before proceeding
-            if (!confirm("Start generating all valid preset combinations?")) {
+            if (!productId) {
                 return;
             }
 
-            // Disable buttons
-            $estimateBtn.prop("disabled", true);
-            $generateBtn.prop("disabled", true);
-            $deleteBtn.prop("disabled", true);
+            if (
+                !confirm(
+                    MKL_PC_BulkGenerator.strings.confirm_start ||
+                        "Start generating all valid preset combinations?",
+                )
+            ) {
+                return;
+            }
 
-            // Show progress
-            $progress.addClass("active");
-            $progressBar.css("width", "0%").text("0%");
-            $progressStatus.text(MKL_PC_BulkGenerator.strings.generating);
-
-            // Reset generated count
-            $container.find('[data-stat="generated"]').text("0");
-
-            // Start batch processing
-            processBatch(productId, 0, 0);
+            startRun(productId);
         });
 
         // Delete all button
@@ -150,6 +558,15 @@
             }
 
             $deleteBtn.prop("disabled", true);
+            setStatus(
+                MKL_PC_BulkGenerator.strings.deleting || "Deleting presets...",
+                "warn",
+            );
+            appendLog(
+                "Deleting all presets for product #" + productId + "...",
+                "warn",
+                { force: true },
+            );
 
             $.ajax({
                 url: MKL_PC_BulkGenerator.ajax_url,
@@ -169,12 +586,34 @@
                         // Update existing count
                         $container.find('[data-stat="existing"]').text("0");
                         $container.find('[data-stat="generated"]').text("0");
+                        appendLog(
+                            response.data.deleted +
+                                " presets deleted successfully.",
+                            "success",
+                            { force: true },
+                        );
+                        setStatus(
+                            MKL_PC_BulkGenerator.strings.deleted ||
+                                "Presets deleted.",
+                            "success",
+                        );
 
                         // Reload configurations list
                         if (window.PC_Presets_Configurations) {
                             window.PC_Presets_Configurations.reset();
                         }
+                        collectExistingPresetTitles();
                     } else {
+                        setStatus(
+                            MKL_PC_BulkGenerator.strings.error + ": " +
+                                response.data.message,
+                            "error",
+                        );
+                        appendLog(
+                            "Delete failed: " + response.data.message,
+                            "error",
+                            { force: true },
+                        );
                         alert(
                             MKL_PC_BulkGenerator.strings.error + ": " +
                                 response.data.message,
@@ -186,37 +625,96 @@
                 },
                 complete: function () {
                     $deleteBtn.prop("disabled", false);
+                    scheduleStatsUpdate();
                 },
             });
         });
 
         // Process batch function
         function processBatch(productId, offset, totalGenerated) {
+            if (isRunCancelled()) {
+                finishGeneration(
+                    totalGenerated,
+                    MKL_PC_BulkGenerator.strings.cancelled ||
+                        "Generation cancelled by user.",
+                    { cancelled: true },
+                );
+                return;
+            }
+
             // Preload images on first batch only
             if (offset === 0 && totalGenerated === 0) {
-                var $container = $(".mkl-pc-bulk-generator");
-                var $progress = $container.find(
-                    ".mkl-pc-bulk-generator-progress",
-                );
-                var $progressStatus = $progress.find(".progress-status");
-
                 $progress.show();
                 $progressStatus.text(
-                    "Preloading images for instant rendering...",
+                    MKL_PC_BulkGenerator.strings.preloading ||
+                        "Preloading images for instant rendering...",
+                );
+                setStatus(
+                    MKL_PC_BulkGenerator.strings.preloading ||
+                        "Preloading images for instant rendering...",
+                    "info",
+                );
+                appendLog(
+                    "Preloading configurator images...",
+                    "info",
+                    { force: true },
                 );
 
+                var preloadStartedAt =
+                    typeof performance !== "undefined" && performance.now
+                        ? performance.now()
+                        : Date.now();
+
                 preloadConfiguratorImages(function () {
+                    if (runMetrics) {
+                        var now =
+                            typeof performance !== "undefined" && performance.now
+                                ? performance.now()
+                                : Date.now();
+                        runMetrics.preloads.push(now - preloadStartedAt);
+                        scheduleStatsUpdate();
+                    }
+                    setStatus(
+                        MKL_PC_BulkGenerator.strings.preload_complete ||
+                            "Images ready. Searching for valid combinations...",
+                        "info",
+                    );
                     // Continue with batch generation after preload
                     processBatchAfterPreload(productId, offset, totalGenerated);
                 });
                 return;
             }
 
+            setStatus(
+                MKL_PC_BulkGenerator.strings.searching ||
+                    "Searching for next valid combination...",
+                "info",
+            );
             processBatchAfterPreload(productId, offset, totalGenerated);
         }
 
         // Process batch after images are preloaded
         function processBatchAfterPreload(productId, offset, totalGenerated) {
+            var batchStartedAt =
+                typeof performance !== "undefined" && performance.now
+                    ? performance.now()
+                    : Date.now();
+            if (isRunCancelled()) {
+                finishGeneration(
+                    totalGenerated,
+                    MKL_PC_BulkGenerator.strings.cancelled ||
+                        "Generation cancelled by user.",
+                    { cancelled: true },
+                );
+                return;
+            }
+
+            setStatus(
+                MKL_PC_BulkGenerator.strings.searching ||
+                    "Searching for valid combinations...",
+                "info",
+            );
+
             $.ajax({
                 url: MKL_PC_BulkGenerator.ajax_url,
                 type: "POST",
@@ -247,6 +745,11 @@
                                 response.data.saved + " saved, " +
                                 response.data.skipped + " skipped this batch)",
                         );
+                        setStatus(
+                            MKL_PC_BulkGenerator.strings.generating ||
+                                "Generating presets...",
+                            "info",
+                        );
 
                         // Update generated count
                         $container.find('[data-stat="generated"]').text(
@@ -262,12 +765,63 @@
                                 enrichConfigurationOrdering(
                                     response.data.expanded_configuration,
                                 );
+                            if (runMetrics) {
+                                setStatus(
+                                    "Rendering preset #" +
+                                        (runMetrics.totalPresets + 1) + "...",
+                                    "info",
+                                );
+                            }
+                            if (
+                                runMetrics &&
+                                (runMetrics.totalPresets < 5 ||
+                                    runMetrics.totalPresets % 10 === 0)
+                            ) {
+                                appendLog(
+                                    "Rendering preset #" +
+                                        (runMetrics.totalPresets + 1) +
+                                        "...",
+                                    "info",
+                                );
+                            }
+                            if (isRunCancelled()) {
+                                finishGeneration(
+                                    totalGenerated,
+                                    MKL_PC_BulkGenerator.strings.cancelled ||
+                                        "Generation cancelled by user.",
+                                    { cancelled: true },
+                                );
+                                return;
+                            }
+                            var applyStartedAt =
+                                typeof performance !== "undefined" && performance.now
+                                    ? performance.now()
+                                    : Date.now();
                             applyAndSavePreset(
                                 productId,
                                 response.data.preset_name || "",
                                 response.data.expanded_configuration,
                                 function () {
+                                    if (runMetrics) {
+                                        var now =
+                                            typeof performance !== "undefined" && performance.now
+                                                ? performance.now()
+                                                : Date.now();
+                                        runMetrics.applyDurations.push(
+                                            now - applyStartedAt,
+                                        );
+                                        scheduleStatsUpdate();
+                                    }
                                     if (!response.data.is_complete) {
+                                        if (isRunCancelled()) {
+                                            finishGeneration(
+                                                totalGenerated,
+                                                MKL_PC_BulkGenerator.strings.cancelled ||
+                                                    "Generation cancelled by user.",
+                                                { cancelled: true },
+                                            );
+                                            return;
+                                        }
                                         processBatch(
                                             productId,
                                             response.data.offset,
@@ -282,6 +836,15 @@
                                 },
                             );
                         } else if (!response.data.is_complete) {
+                            if (isRunCancelled()) {
+                                finishGeneration(
+                                    totalGenerated,
+                                    MKL_PC_BulkGenerator.strings.cancelled ||
+                                        "Generation cancelled by user.",
+                                    { cancelled: true },
+                                );
+                                return;
+                            }
                             // No valid combination in this batch, continue
                             processBatch(
                                 productId,
@@ -296,20 +859,52 @@
                             );
                         }
                     } else {
+                        var failureMessage = response.data && response.data.message
+                            ? response.data.message
+                            : MKL_PC_BulkGenerator.strings.error;
+                        setStatus(
+                            (MKL_PC_BulkGenerator.strings.error || "Error") +
+                                ": " +
+                                failureMessage,
+                            "error",
+                        );
+                        appendLog(
+                            "Generation stopped: " + failureMessage,
+                            "error",
+                            { force: true },
+                        );
+                        finishGeneration(
+                            totalGenerated,
+                            failureMessage,
+                            { error: true },
+                        );
                         alert(
                             MKL_PC_BulkGenerator.strings.error + ": " +
                                 response.data.message,
                         );
-                        $estimateBtn.prop("disabled", false);
-                        $generateBtn.prop("disabled", false);
-                        $deleteBtn.prop("disabled", false);
                     }
                 },
                 error: function (xhr, status, error) {
-                    alert(MKL_PC_BulkGenerator.strings.error + ": " + error);
-                    $estimateBtn.prop("disabled", false);
-                    $generateBtn.prop("disabled", false);
-                    $deleteBtn.prop("disabled", false);
+                    var errorText = MKL_PC_BulkGenerator.strings.error + ": " +
+                        error;
+                    setStatus(errorText, "error");
+                    appendLog(errorText, "error", { force: true });
+                    alert(errorText);
+                    finishGeneration(
+                        totalGenerated,
+                        error,
+                        { error: true },
+                    );
+                },
+                complete: function () {
+                    if (runMetrics) {
+                        var now =
+                            typeof performance !== "undefined" && performance.now
+                                ? performance.now()
+                                : Date.now();
+                        runMetrics.batches.push(now - batchStartedAt);
+                        scheduleStatsUpdate();
+                    }
                 },
             });
         }
@@ -392,8 +987,39 @@
                 presetName && presetName.length
                     ? presetName
                     : generatePresetName(configuration);
+            var normalizedName = generatedName ? generatedName.trim() : "";
+            var titleKey = normalizedName ? normalizedName.toLowerCase() : "";
+
+            if (titleKey && knownPresetTitles.has(titleKey)) {
+                setStatus(
+                    "Skipped duplicate preset title.",
+                    "warn",
+                );
+                appendLog(
+                    "Skipped duplicate preset title: " + normalizedName,
+                    "warn",
+                    { force: true },
+                );
+                if (runMetrics) {
+                    runMetrics.skippedDuplicates =
+                        (runMetrics.skippedDuplicates || 0) + 1;
+                    scheduleStatsUpdate();
+                }
+                setTimeout(callback, 120);
+                return;
+            }
 
             configuration = enrichConfigurationOrdering(configuration);
+
+            setStatus(
+                MKL_PC_BulkGenerator.strings.saving || "Saving preset...",
+                "info",
+            );
+
+            var ajaxStartedAt =
+                typeof performance !== "undefined" && performance.now
+                    ? performance.now()
+                    : Date.now();
 
             $.ajax({
                 url: MKL_PC_BulkGenerator.ajax_url,
@@ -412,6 +1038,14 @@
 
                     if (response.success && presetId) {
                         console.log("✓ Preset saved:", generatedName, "#", presetId);
+                        if (runMetrics) {
+                            runMetrics.totalPresets += 1;
+                            scheduleStatsUpdate();
+                        }
+
+                        if (titleKey) {
+                            knownPresetTitles.add(titleKey);
+                        }
 
                         var $presetInput = $('.mkl_pc_admin input[name="new_preset_title"]');
                         if ($presetInput.length) {
@@ -424,6 +1058,35 @@
                             content: configuration,
                         });
 
+                        var thumbnailInfo = response.data &&
+                            response.data.thumbnail
+                            ? response.data.thumbnail
+                            : null;
+                        if (
+                            runMetrics &&
+                            thumbnailInfo &&
+                            thumbnailInfo.mode === "async"
+                        ) {
+                            runMetrics.asyncThumbnails =
+                                (runMetrics.asyncThumbnails || 0) + 1;
+                        }
+
+                        if (
+                            !runMetrics ||
+                            runMetrics.totalPresets <= 5 ||
+                            runMetrics.totalPresets % 10 === 0
+                        ) {
+                            appendLog(
+                                "Saved preset #" + presetId + " • " + generatedName,
+                                "success",
+                            );
+                        }
+                        setStatus(
+                            "Saved preset #" + presetId +
+                                " (" + runMetrics.totalPresets + " total).",
+                            "success",
+                        );
+
                         setTimeout(callback, 200);
                         return;
                     }
@@ -434,16 +1097,61 @@
 
                     if (errorMessage && errorMessage.toLowerCase().indexOf('duplicate') !== -1) {
                         console.log('Preset already exists, skipping:', generatedName);
+                        setStatus(
+                            "Skipped duplicate preset.",
+                            "warn",
+                        );
+                        appendLog(
+                            "Skipped duplicate preset: " + generatedName,
+                            "warn",
+                            { force: true },
+                        );
+                        if (runMetrics) {
+                            runMetrics.skippedDuplicates =
+                                (runMetrics.skippedDuplicates || 0) + 1;
+                            scheduleStatsUpdate();
+                        }
+                        if (titleKey) {
+                            knownPresetTitles.add(titleKey);
+                        }
                         setTimeout(callback, 200);
                         return;
                     }
 
                     console.warn('✗ Failed to create preset:', errorMessage, response);
+                    setStatus(
+                        "Failed to create preset: " + errorMessage,
+                        "error",
+                    );
+                    appendLog(
+                        "Preset save failed: " + errorMessage,
+                        "error",
+                        { force: true },
+                    );
                     setTimeout(callback, 200);
                 },
                 error: function (xhr, status, error) {
                     console.warn("✗ AJAX save failed:", error || status);
+                    setStatus(
+                        "Preset save failed: " + (error || status),
+                        "error",
+                    );
+                    appendLog(
+                        "Preset save failed: " + (error || status),
+                        "error",
+                        { force: true },
+                    );
                     setTimeout(callback, 200);
+                },
+                complete: function () {
+                    if (runMetrics) {
+                        var now =
+                            typeof performance !== "undefined" && performance.now
+                                ? performance.now()
+                                : Date.now();
+                        runMetrics.saveDurations.push(now - ajaxStartedAt);
+                        scheduleStatsUpdate();
+                    }
                 },
             });
         }
@@ -602,58 +1310,99 @@
                     return;
                 }
 
-                if (!layer.get("active")) {
-                    var layerSelector =
-                        '.layers-list-item[data-layer="' +
-                        layer.id +
-                        '"] > .layer-item';
-                    var $layerHeader = $(layerSelector);
+                if (layer.get("active")) {
+                    onReady();
+                    return;
+                }
 
-                    if ($layerHeader.length) {
-                        $layerHeader.trigger("click");
+                var resolved = false;
+                var cleanup = function () {
+                    if (resolved) {
+                        return;
+                    }
+                    resolved = true;
+                    layer.off("change:active", onChange);
+                    if (timeoutId) {
+                        clearTimeout(timeoutId);
+                    }
+                    onReady();
+                };
+
+                var onChange = function (model, active) {
+                    if (active) {
+                        cleanup();
+                    }
+                };
+
+                layer.on("change:active", onChange);
+
+                var layerSelector =
+                    '.layers-list-item[data-layer="' +
+                    layer.id +
+                    '"] > .layer-item';
+                var $layerHeader = $(layerSelector);
+
+                if ($layerHeader.length) {
+                    $layerHeader.trigger("click");
+                }
+
+                // Fallback if UI event didn't set it active
+                layer.set("active", true);
+
+                var timeoutId = setTimeout(function () {
+                    layer.off("change:active", onChange);
+                    if (layer.get("active") || attempt >= 3) {
+                        cleanup();
+                        return;
                     }
 
-                    layer.set("active", true);
-                }
-
-                if (layer.get("active")) {
-                    setTimeout(onReady, 120);
-                    return;
-                }
-
-                if (attempt >= 10) {
-                    layer.set("active", true);
-                    setTimeout(onReady, 120);
-                    return;
-                }
-
-                setTimeout(function () {
                     openLayer(layer, onReady, attempt + 1);
-                }, 80);
+                }, 60);
             }
 
             function waitForChoice(model, onReady, attempt) {
                 attempt = attempt || 0;
 
                 if (!model || typeof model.get !== "function") {
-                    setTimeout(onReady, 120);
+                    onReady();
                     return;
                 }
 
                 if (model.get("active")) {
-                    setTimeout(onReady, 100);
+                    onReady();
                     return;
                 }
 
-                if (attempt >= 20) {
-                    console.warn("Choice did not activate in time", model.id);
-                    setTimeout(onReady, 100);
-                    return;
-                }
+                var resolved = false;
+                var cleanup = function () {
+                    if (resolved) {
+                        return;
+                    }
+                    resolved = true;
+                    model.off("change:active", onChange);
+                    if (timeoutId) {
+                        clearTimeout(timeoutId);
+                    }
+                    onReady();
+                };
 
-                setTimeout(function () {
+                var onChange = function (choice, active) {
+                    if (active) {
+                        cleanup();
+                    }
+                };
+
+                model.on("change:active", onChange);
+
+                var timeoutId = setTimeout(function () {
+                    model.off("change:active", onChange);
+                    if (model.get("active") || attempt >= 4) {
+                        cleanup();
+                        return;
+                    }
+
                     waitForChoice(model, onReady, attempt + 1);
-                }, 80);
+                }, 60);
             }
 
             function processNext() {
@@ -669,7 +1418,7 @@
                             finalConfig,
                             callback,
                         );
-                    }, 150);
+                    }, 60);
                     return;
                 }
 
@@ -713,56 +1462,148 @@
             processNext();
         }
 
-        function finishGeneration(totalGenerated, message) {
+        function finishGeneration(totalGenerated, message, options) {
+            options = options || {};
+            if (currentRun && currentRun.finished) {
+                return;
+            }
+
             var $container = $(".mkl-pc-bulk-generator");
-            var $estimateBtn = $container.find(".mkl-pc-estimate-btn");
-            var $generateBtn = $container.find(".mkl-pc-generate-btn");
-            var $deleteBtn = $container.find(".mkl-pc-delete-all-btn");
             var $progress = $container.find(".mkl-pc-bulk-generator-progress");
             var $progressBar = $progress.find(".progress-bar");
             var $progressStatus = $progress.find(".progress-status");
+            var productIdForRefresh = currentRun ? currentRun.productId : null;
+            var ajaxEndpoint = (typeof MKL_PC_BulkGenerator !== "undefined" &&
+                MKL_PC_BulkGenerator.ajax_url)
+                ? MKL_PC_BulkGenerator.ajax_url
+                : (typeof ajaxurl !== "undefined" ? ajaxurl : null);
 
-            var completionMessage = MKL_PC_BulkGenerator.strings.complete +
-                " (" +
-                totalGenerated + " valid presets saved)";
+            var cancelled = !!options.cancelled;
+            var errored = !!options.error;
 
-            if (message) {
-                completionMessage += " - " + message;
-            }
+            var defaultMessage = cancelled
+                ? (MKL_PC_BulkGenerator.strings.cancelled ||
+                    "Generation cancelled by user.")
+                : (errored
+                    ? (MKL_PC_BulkGenerator.strings.error || "An error occurred.")
+                    : (MKL_PC_BulkGenerator.strings.complete ||
+                        "Generation complete!"));
 
-            $progressStatus.text(completionMessage);
+            var finalMessage = message ? message : defaultMessage;
+            var statusTone = cancelled ? "warn" : (errored ? "error" : "success");
+
+            setRunningState(false);
+            markRunFinished();
+
             $progressBar.css("width", "100%").text("100%");
-
-            // Re-enable buttons
-            $estimateBtn.prop("disabled", false);
-            $generateBtn.prop("disabled", false);
-            $deleteBtn.prop("disabled", false);
-
-            // Update existing count
+            $progressStatus.text(finalMessage);
+            $container.find('[data-stat="generated"]').text(
+                totalGenerated.toLocaleString(),
+            );
             $container.find('[data-stat="existing"]').text(
                 totalGenerated.toLocaleString(),
             );
+            setStatus(finalMessage, statusTone);
 
-            // Reload configurations list
-            if (window.PC_Presets_Configurations) {
-                // Fetch fresh data
+            if (cancelled) {
+                appendLog(
+                    "Generation cancelled after " + totalGenerated + " presets" +
+                        (runMetrics && runMetrics.skippedDuplicates
+                            ? " (" + runMetrics.skippedDuplicates + " skipped)"
+                            : "") +
+                        ".",
+                    "warn",
+                    { force: true },
+                );
+            } else if (errored) {
+                appendLog(
+                    "Generation stopped after " + totalGenerated + " presets" +
+                        (runMetrics && runMetrics.skippedDuplicates
+                            ? " (" + runMetrics.skippedDuplicates + " skipped)"
+                            : "") +
+                        ".",
+                    "error",
+                    { force: true },
+                );
+            } else {
+                appendLog(
+                    "Generation complete (" + totalGenerated + " presets" +
+                        (runMetrics && runMetrics.skippedDuplicates
+                            ? ", " + runMetrics.skippedDuplicates + " skipped"
+                            : "") +
+                        ").",
+                    "success",
+                    { force: true },
+                );
+            }
+
+            if (productIdForRefresh && ajaxEndpoint && window.PC_Presets_Configurations) {
                 $.ajax({
-                    url: ajaxurl,
+                    url: ajaxEndpoint,
                     type: "GET",
                     data: {
                         action: "mkl_pc_get_content",
                         data: "configurations",
-                        id: productId,
+                        id: productIdForRefresh,
                         status: "preset",
                     },
                     success: function (configs) {
                         if (configs && Array.isArray(configs)) {
-                            window.PC_Presets_Configurations
-                                .reset(configs);
+                            window.PC_Presets_Configurations.reset(configs);
+                            collectExistingPresetTitles();
                         }
                     },
                 });
+            } else {
+                collectExistingPresetTitles();
             }
+
+            if (runMetrics) {
+                var now =
+                    typeof performance !== "undefined" && performance.now
+                        ? performance.now()
+                        : Date.now();
+                var totalTime = now - runMetrics.startedAt;
+                var average = function (values) {
+                    if (!values || !values.length) {
+                        return 0;
+                    }
+                    var sum = values.reduce(function (acc, val) {
+                        return acc + val;
+                    }, 0);
+                    return sum / values.length;
+                };
+
+                console.groupCollapsed(
+                    "MKL Bulk Generator metrics: " +
+                        totalGenerated +
+                        " presets in " +
+                        Math.round(totalTime) +
+                        "ms",
+                );
+                console.table({
+                    presets: runMetrics.totalPresets,
+                    totalTimeMs: Math.round(totalTime),
+                    preloadCount: runMetrics.preloads.length,
+                    avgPreloadMs: Math.round(average(runMetrics.preloads)),
+                    batches: runMetrics.batches.length,
+                    avgBatchMs: Math.round(average(runMetrics.batches)),
+                    saves: runMetrics.saveDurations.length,
+                    avgSaveMs: Math.round(average(runMetrics.saveDurations)),
+                    applyCalls: runMetrics.applyDurations.length,
+                    avgApplyMs: Math.round(average(runMetrics.applyDurations)),
+                    asyncThumbnails: runMetrics.asyncThumbnails || 0,
+                    skippedDuplicates: runMetrics.skippedDuplicates || 0,
+                });
+                console.log("Preload durations (ms):", runMetrics.preloads);
+                console.log("Batch AJAX durations (ms):", runMetrics.batches);
+                console.log("Apply durations (ms):", runMetrics.applyDurations);
+                console.log("Save AJAX durations (ms):", runMetrics.saveDurations);
+                console.groupEnd();
+            }
+
+            scheduleStatsUpdate();
+            currentRun = null;
         }
     }
 })(jQuery, _);

@@ -117,11 +117,30 @@ class MKL_PC_Preset_Generator_Admin_UI
             }
 
             .mkl-pc-bulk-generator-info {
-                margin-top: 15px;
-                padding: 10px;
-                background: white;
-                border-radius: 4px;
+                margin: 0;
+                padding: 0;
+                background: transparent;
+                border-radius: 0;
                 font-size: 13px;
+            }
+
+            .mkl-pc-bulk-panels {
+                display: grid;
+                gap: 15px;
+                margin-top: 15px;
+            }
+
+            @media (min-width: 960px) {
+                .mkl-pc-bulk-panels {
+                    grid-template-columns: minmax(260px, 0.9fr) minmax(320px, 1.1fr);
+                }
+            }
+
+            .mkl-pc-bulk-panel {
+                background: #ffffff;
+                border-radius: 6px;
+                box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+                padding: 16px;
             }
 
             .mkl-pc-bulk-generator-progress {
@@ -186,6 +205,133 @@ class MKL_PC_Preset_Generator_Admin_UI
                 text-transform: uppercase;
                 margin-top: 5px;
             }
+
+            .mkl-pc-bulk-generator-actions button.stop {
+                background: #f0ad4e;
+                color: #1f2d3d;
+            }
+
+            .mkl-pc-bulk-generator-actions button.stop:hover {
+                background: #d79531;
+            }
+
+            .mkl-pc-bulk-generator-actions button.stop:disabled {
+                background: #fde2af;
+                color: #a3741c;
+            }
+
+            .mkl-pc-bulk-live {
+                display: flex;
+                flex-direction: column;
+                gap: 12px;
+            }
+
+            .mkl-pc-bulk-live-status {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                font-size: 13px;
+                color: #4a5568;
+            }
+
+            .mkl-pc-bulk-live-status span:first-child {
+                font-weight: 600;
+                letter-spacing: 0.02em;
+                text-transform: uppercase;
+                font-size: 11px;
+                color: #64748b;
+            }
+
+            .mkl-pc-bulk-live-status .status-text {
+                font-weight: 600;
+            }
+
+            .status-text.status--info {
+                color: #1f2937;
+            }
+
+            .status-text.status--success {
+                color: #217a2c;
+            }
+
+            .status-text.status--warn {
+                color: #b7791f;
+            }
+
+            .status-text.status--error {
+                color: #c53030;
+            }
+
+            .mkl-pc-bulk-live-stats {
+                display: grid;
+                grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
+                gap: 10px;
+            }
+
+            .mkl-pc-bulk-live-card {
+                background: #f8fafc;
+                border-radius: 6px;
+                padding: 10px 12px;
+                text-align: center;
+            }
+
+            .mkl-pc-bulk-live-card .value {
+                font-size: 20px;
+                font-weight: 600;
+                color: #006799;
+            }
+
+            .mkl-pc-bulk-live-card .label {
+                font-size: 11px;
+                text-transform: uppercase;
+                color: #64748b;
+                letter-spacing: 0.03em;
+                margin-top: 4px;
+            }
+
+            .mkl-pc-bulk-live-log {
+                border: 1px solid #e2e8f0;
+                border-radius: 6px;
+                background: #ffffff;
+                max-height: 160px;
+                overflow: hidden;
+            }
+
+            .mkl-pc-bulk-live-log ul {
+                list-style: none;
+                margin: 0;
+                padding: 10px 12px;
+                max-height: 160px;
+                overflow-y: auto;
+                display: flex;
+                flex-direction: column;
+                gap: 6px;
+            }
+
+            .mkl-pc-bulk-live-log li {
+                font-size: 12px;
+                display: flex;
+                justify-content: space-between;
+                gap: 12px;
+                color: #334155;
+            }
+
+            .mkl-pc-bulk-live-log li .timestamp {
+                color: #9ca3af;
+                font-variant-numeric: tabular-nums;
+            }
+
+            .log-entry--success {
+                color: #1f7a3d;
+            }
+
+            .log-entry--warn {
+                color: #b7791f;
+            }
+
+            .log-entry--error {
+                color: #c53030;
+            }
         </style>
 
         <script type="text/html" id="tmpl-mkl-pc-bulk-generator-ui">
@@ -203,21 +349,67 @@ class MKL_PC_Preset_Generator_Admin_UI
                     <button type="button" class="mkl-pc-delete-all-btn danger" data-product-id="<?php echo esc_attr($product_id); ?>">
                         <?php esc_html_e('Delete All Presets', 'mkl-pc-preset-generator'); ?>
                     </button>
+                    <button type="button" class="mkl-pc-stop-btn stop" disabled>
+                        <?php esc_html_e('Stop Run', 'mkl-pc-preset-generator'); ?>
+                    </button>
                 </div>
 
-                <div class="mkl-pc-bulk-generator-info">
-                    <div class="mkl-pc-bulk-stats">
-                        <div class="mkl-pc-bulk-stat">
-                            <div class="mkl-pc-bulk-stat-value" data-stat="estimated">-</div>
-                            <div class="mkl-pc-bulk-stat-label"><?php esc_html_e('Estimated Total', 'mkl-pc-preset-generator'); ?></div>
+                <div class="mkl-pc-bulk-panels">
+                    <div class="mkl-pc-bulk-panel">
+                        <div class="mkl-pc-bulk-generator-info">
+                            <div class="mkl-pc-bulk-stats">
+                                <div class="mkl-pc-bulk-stat">
+                                    <div class="mkl-pc-bulk-stat-value" data-stat="estimated">-</div>
+                                    <div class="mkl-pc-bulk-stat-label"><?php esc_html_e('Estimated Total', 'mkl-pc-preset-generator'); ?></div>
+                                </div>
+                                <div class="mkl-pc-bulk-stat">
+                                    <div class="mkl-pc-bulk-stat-value" data-stat="existing">-</div>
+                                    <div class="mkl-pc-bulk-stat-label"><?php esc_html_e('Existing Presets', 'mkl-pc-preset-generator'); ?></div>
+                                </div>
+                                <div class="mkl-pc-bulk-stat">
+                                    <div class="mkl-pc-bulk-stat-value" data-stat="generated">0</div>
+                                    <div class="mkl-pc-bulk-stat-label"><?php esc_html_e('Generated', 'mkl-pc-preset-generator'); ?></div>
+                                </div>
+                            </div>
                         </div>
-                        <div class="mkl-pc-bulk-stat">
-                            <div class="mkl-pc-bulk-stat-value" data-stat="existing">-</div>
-                            <div class="mkl-pc-bulk-stat-label"><?php esc_html_e('Existing Presets', 'mkl-pc-preset-generator'); ?></div>
+                    </div>
+                    <div class="mkl-pc-bulk-panel mkl-pc-bulk-live">
+                        <div class="mkl-pc-bulk-live-status">
+                            <span><?php esc_html_e('Status', 'mkl-pc-preset-generator'); ?></span>
+                            <span class="status-text status--info" data-live="status"><?php esc_html_e('Ready to start.', 'mkl-pc-preset-generator'); ?></span>
                         </div>
-                        <div class="mkl-pc-bulk-stat">
-                            <div class="mkl-pc-bulk-stat-value" data-stat="generated">0</div>
-                            <div class="mkl-pc-bulk-stat-label"><?php esc_html_e('Generated', 'mkl-pc-preset-generator'); ?></div>
+                        <div class="mkl-pc-bulk-live-stats">
+                            <div class="mkl-pc-bulk-live-card">
+                                <div class="value" data-live="elapsed">0:00</div>
+                                <div class="label"><?php esc_html_e('Elapsed', 'mkl-pc-preset-generator'); ?></div>
+                            </div>
+                            <div class="mkl-pc-bulk-live-card">
+                                <div class="value" data-live="rate">0</div>
+                                <div class="label"><?php esc_html_e('Presets / min', 'mkl-pc-preset-generator'); ?></div>
+                            </div>
+                            <div class="mkl-pc-bulk-live-card">
+                                <div class="value" data-live="avg-apply">-</div>
+                                <div class="label"><?php esc_html_e('Avg Apply', 'mkl-pc-preset-generator'); ?></div>
+                            </div>
+                            <div class="mkl-pc-bulk-live-card">
+                                <div class="value" data-live="avg-save">-</div>
+                                <div class="label"><?php esc_html_e('Avg Save', 'mkl-pc-preset-generator'); ?></div>
+                            </div>
+                            <div class="mkl-pc-bulk-live-card">
+                                <div class="value" data-live="async-thumbs">0</div>
+                                <div class="label"><?php esc_html_e('Async Thumbs', 'mkl-pc-preset-generator'); ?></div>
+                            </div>
+                            <div class="mkl-pc-bulk-live-card">
+                                <div class="value" data-live="skipped-duplicates">0</div>
+                                <div class="label"><?php esc_html_e('Skipped (Dup)', 'mkl-pc-preset-generator'); ?></div>
+                            </div>
+                        </div>
+                        <div class="mkl-pc-bulk-live-log">
+                            <ul data-live-log>
+                                <li class="log-entry log-entry--info">
+                                    <span><?php esc_html_e('Activity will appear here once generation starts.', 'mkl-pc-preset-generator'); ?></span>
+                                </li>
+                            </ul>
                         </div>
                     </div>
                 </div>
@@ -261,6 +453,17 @@ class MKL_PC_Preset_Generator_Admin_UI
                 'generating' => __('Generating presets...', 'mkl-pc-preset-generator'),
                 'complete' => __('Generation complete!', 'mkl-pc-preset-generator'),
                 'error' => __('An error occurred', 'mkl-pc-preset-generator'),
+                'ready' => __('Ready to start.', 'mkl-pc-preset-generator'),
+                'preloading' => __('Preloading images for instant rendering...', 'mkl-pc-preset-generator'),
+                'preload_complete' => __('Images ready. Searching for valid combinations...', 'mkl-pc-preset-generator'),
+                'searching' => __('Searching for valid combinations...', 'mkl-pc-preset-generator'),
+                'saving' => __('Saving preset...', 'mkl-pc-preset-generator'),
+                'cancelling' => __('Cancelling...', 'mkl-pc-preset-generator'),
+                'cancelled' => __('Generation cancelled by user.', 'mkl-pc-preset-generator'),
+                'deleting' => __('Deleting presets...', 'mkl-pc-preset-generator'),
+                'deleted' => __('Presets deleted.', 'mkl-pc-preset-generator'),
+                'log_empty' => __('Activity will appear here once generation starts.', 'mkl-pc-preset-generator'),
+                'confirm_start' => __('Start generating all valid preset combinations?', 'mkl-pc-preset-generator'),
                 'confirm_delete' => __('Are you sure you want to delete all presets for this product? This cannot be undone.', 'mkl-pc-preset-generator'),
             ],
         ]);
@@ -585,13 +788,34 @@ class MKL_PC_Preset_Generator_Admin_UI
                     'post_status' => 'preset',
                 ]);
 
+                $save_image_async = isset($saved['save_image_async']) ? $saved['save_image_async'] : false;
+
                 // Trigger image generation
-                if (!$skip_thumbnail && isset($saved['save_image_async']) && $saved['save_image_async'] && $preset_id) {
+                if (
+                    !$skip_thumbnail &&
+                    $save_image_async &&
+                    is_array($save_image_async) &&
+                    isset($save_image_async['should_save']) &&
+                    $save_image_async['should_save'] &&
+                    $preset_id
+                ) {
                     $preset->save_image($preset->content, $preset_id);
                 }
 
                 error_log("Successfully saved expanded preset #$preset_id");
-                $response = ['preset_id' => $preset_id];
+                $response = [
+                    'preset_id' => $preset_id,
+                    'message' => isset($saved['message']) ? $saved['message'] : '',
+                    'thumbnail' => [
+                        'mode' => ($save_image_async && is_array($save_image_async) && !empty($save_image_async['should_save']))
+                            ? 'async'
+                            : 'sync',
+                    ],
+                ];
+
+                if ($save_image_async && is_array($save_image_async)) {
+                    $response['thumbnail'] = array_merge($response['thumbnail'], $save_image_async);
+                }
 
                 wp_send_json_success($response);
             } else {
