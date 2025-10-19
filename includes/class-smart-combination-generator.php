@@ -21,6 +21,10 @@ class MKL_PC_Smart_Combination_Generator
     private $core_layer_names = [];
     private $content_map = [];
     private $conditions = [];
+    private $count_time_limit = null;
+    private $count_max_results = null;
+    private $count_started_at = 0.0;
+    private $count_terminated = false;
 
     public function __construct($product_id)
     {
@@ -174,14 +178,36 @@ class MKL_PC_Smart_Combination_Generator
     /**
      * Count valid combinations without keeping them in memory.
      */
-    public function count_valid_combinations()
+    public function count_valid_combinations($max_results = null, $time_limit = null)
     {
         $collector = null;
         $valid_counter = 0;
         $collected = 0;
+
+        $this->count_max_results = $max_results !== null ? max(0, (int) $max_results) : null;
+        $this->count_time_limit = $time_limit !== null ? max(0, (float) $time_limit) : null;
+        $this->count_started_at = microtime(true);
+        $this->count_terminated = false;
+
         $this->explore(0, [], $collector, 0, null, $valid_counter, $collected);
 
-        return $valid_counter;
+        $elapsed = microtime(true) - $this->count_started_at;
+
+        $result = [
+            'count' => $valid_counter,
+            'complete' => ! $this->count_terminated,
+            'elapsed' => $elapsed,
+        ];
+
+        $this->count_max_results = null;
+        $this->count_time_limit = null;
+        $this->count_started_at = 0.0;
+
+        if ($max_results === null && $time_limit === null) {
+            return $result['count'];
+        }
+
+        return $result;
     }
 
     /**
@@ -225,6 +251,20 @@ class MKL_PC_Smart_Combination_Generator
      */
     private function explore($layer_index, $current_selection, &$collector, $offset, $limit, &$valid_counter, &$collected)
     {
+        if ($this->count_time_limit !== null) {
+            if ((microtime(true) - $this->count_started_at) >= $this->count_time_limit) {
+                $this->count_terminated = true;
+                return true;
+            }
+        }
+
+        if ($this->count_max_results !== null && $limit === null && $this->count_max_results > 0) {
+            if ($valid_counter >= $this->count_max_results) {
+                $this->count_terminated = true;
+                return true;
+            }
+        }
+
         $total_layers = count($this->layers);
 
         if ($layer_index >= $total_layers) {
@@ -242,6 +282,18 @@ class MKL_PC_Smart_Combination_Generator
                 }
 
                 $valid_counter++;
+
+                if ($this->count_max_results !== null && $limit === null && $valid_counter >= $this->count_max_results) {
+                    $this->count_terminated = true;
+                    return true;
+                }
+
+                if ($this->count_time_limit !== null) {
+                    if ((microtime(true) - $this->count_started_at) >= $this->count_time_limit) {
+                        $this->count_terminated = true;
+                        return true;
+                    }
+                }
 
                 if ($limit !== null && $collected >= $limit) {
                     return true;

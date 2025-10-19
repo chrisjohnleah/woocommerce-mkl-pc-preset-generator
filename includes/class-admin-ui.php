@@ -464,6 +464,8 @@ class MKL_PC_Preset_Generator_Admin_UI
                 'deleted' => __('Presets deleted.', 'mkl-pc-preset-generator'),
                 'log_empty' => __('Activity will appear here once generation starts.', 'mkl-pc-preset-generator'),
                 'confirm_start' => __('Start generating all valid preset combinations?', 'mkl-pc-preset-generator'),
+                'estimate_complete' => __('Estimate complete.', 'mkl-pc-preset-generator'),
+                'estimate_truncated' => __('Enumerated', 'mkl-pc-preset-generator'),
                 'confirm_delete' => __('Are you sure you want to delete all presets for this product? This cannot be undone.', 'mkl-pc-preset-generator'),
             ],
         ]);
@@ -531,53 +533,68 @@ class MKL_PC_Preset_Generator_Admin_UI
 
             error_log("RAW CALCULATION: " . number_format($simple_estimate) . " combinations");
 
-            // Use SAMPLING: Check first 100k combinations for fast estimate
             $validator = new MKL_PC_Preset_Conditional_Validator($product_id);
+            $existing = $saver->get_preset_count();
+            $total_theoretical = $simple_estimate;
 
-            $sample_size = 100000;
-            $valid_count = 0;
-            $checked = 0;
-            $batch_size = 100;
-            $offset = 0;
+            $estimate_data = $this->estimate_valid_configurations(
+                $generator,
+                $validator,
+                $total_theoretical,
+                $product_id
+            );
 
-            $start_time = microtime(true);
+            $pass_rate_percent = isset($estimate_data['pass_rate'])
+                ? round($estimate_data['pass_rate'] * 100, 2)
+                : 0;
 
-            while ($checked < $sample_size) {
-                $combinations = $generator->generate_combinations_batch($offset, $batch_size);
+            if (!empty($estimate_data['exact'])) {
+                $message = sprintf(
+                    __('Exact: %1$s valid of %2$s combinations checked.', 'mkl-pc-preset-generator'),
+                    number_format($estimate_data['valid_total']),
+                    number_format($estimate_data['checked_total'])
+                );
+            } else {
+                $lower = isset($estimate_data['lower_ci'])
+                    ? max(0, round($estimate_data['lower_ci']))
+                    : 0;
+                $upper = isset($estimate_data['upper_ci'])
+                    ? max(0, round($estimate_data['upper_ci']))
+                    : 0;
+                $estimate_text = isset($estimate_data['valid_estimate'])
+                    ? number_format(round($estimate_data['valid_estimate']))
+                    : '0';
 
-                if (empty($combinations)) {
-                    break; // No more combinations
+                if ($upper > 0 && $lower > 0) {
+                    $message = sprintf(
+                        __('Estimated: %1$s valid (95%% CI: %2$s – %3$s) based on %4$s samples.', 'mkl-pc-preset-generator'),
+                        $estimate_text,
+                        number_format($lower),
+                        number_format($upper),
+                        number_format($estimate_data['samples'])
+                    );
+                } else {
+                    $message = sprintf(
+                        __('Estimated: %1$s valid based on %2$s samples.', 'mkl-pc-preset-generator'),
+                        $estimate_text,
+                        number_format($estimate_data['samples'])
+                    );
                 }
-
-                foreach ($combinations as $combination) {
-                    $checked++;
-                    if ($validator->validate_combination($combination)) {
-                        $valid_count++;
-                    }
-
-                    if ($checked >= $sample_size) {
-                        break;
-                    }
-                }
-
-                $offset += $batch_size;
             }
 
-            $elapsed = round(microtime(true) - $start_time, 2);
-            $pass_rate = $checked > 0 ? round(($valid_count / $checked) * 100, 2) : 0;
-
-            error_log("Sampling: $valid_count valid out of $checked checked ({$pass_rate}% pass rate) in {$elapsed}s");
-
-            $existing = $saver->get_preset_count();
-
-            $message = "Sample: $valid_count valid in " . number_format($checked) . " checked ({$pass_rate}% pass rate). Estimated total: " . number_format($valid_count * 10) . "+";
-
             wp_send_json_success([
-                'valid_count' => $valid_count,
-                'total_checked' => $valid_count, // Smart gen only produces valid ones
+                'valid_count' => isset($estimate_data['valid_total'])
+                    ? $estimate_data['valid_total']
+                    : (isset($estimate_data['valid_estimate']) ? round($estimate_data['valid_estimate']) : 0),
+                'total_checked' => isset($estimate_data['checked_total'])
+                    ? $estimate_data['checked_total']
+                    : (isset($estimate_data['samples']) ? $estimate_data['samples'] : 0),
                 'existing' => $existing,
                 'layers' => $layer_info,
                 'total_layers' => count($layers),
+                'total_possible' => $total_theoretical,
+                'pass_rate' => $pass_rate_percent,
+                'estimate' => $estimate_data,
                 'message' => $message,
             ]);
         } catch (Exception $e) {
@@ -853,6 +870,54 @@ class MKL_PC_Preset_Generator_Admin_UI
             'deleted' => $deleted,
         ]);
     }
+
+    /**
+     * Estimate valid configuration count using adaptive sampling or exhaustive evaluation.
+     *
+     * @param MKL_PC_Preset_Combination_Generator     $generator
+     * @param MKL_PC_Preset_Conditional_Validator     $validator
+     * @param float|int                               $total_theoretical
+     * @param int                                     $product_id
+     * @return array
+     */
+    private function estimate_valid_configurations(
+        MKL_PC_Preset_Combination_Generator $generator,
+        MKL_PC_Preset_Conditional_Validator $validator,
+        $total_theoretical,
+        $product_id
+    ) {
+        $smart_generator = new MKL_PC_Smart_Combination_Generator($product_id);
+
+        $max_valid = apply_filters('mkl_pc_preset_generator_estimate_exact_valid_limit', 75000, $product_id);
+        $max_time = apply_filters('mkl_pc_preset_generator_estimate_exact_time_limit', 2.5, $product_id);
+
+        $count_result = $smart_generator->count_valid_combinations($max_valid, $max_time);
+
+        $result = [
+            'samples' => isset($count_result['count']) ? $count_result['count'] : 0,
+            'valid_samples' => isset($count_result['count']) ? $count_result['count'] : 0,
+            'pass_rate' => 0,
+            'duration' => isset($count_result['elapsed']) ? round($count_result['elapsed'], 3) : 0,
+            'exact' => false,
+        ];
+
+        if (isset($count_result['complete']) && $count_result['complete']) {
+            $result['exact'] = true;
+            $result['checked_total'] = $count_result['count'];
+            $result['valid_total'] = $count_result['count'];
+            $result['pass_rate'] = $count_result['count'] > 0 ? 1 : 0;
+
+            return $result;
+        }
+
+        $result['valid_estimate'] = $count_result['count'];
+        $result['lower_ci'] = null;
+        $result['upper_ci'] = null;
+        $result['truncated'] = true;
+
+        return $result;
+    }
+
 
     /**
      * Ensure configuration layers follow image order to prevent incorrect overlay rendering

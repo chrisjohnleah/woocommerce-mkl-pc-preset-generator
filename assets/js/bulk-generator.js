@@ -109,6 +109,23 @@
             return total / values.length;
         }
 
+        function formatNumber(value) {
+            var num = Number(value);
+            if (!isFinite(num)) {
+                return "0";
+            }
+            return num.toLocaleString();
+        }
+
+        function formatRange(lower, upper) {
+            if (!isFinite(lower) || !isFinite(upper)) {
+                return "-";
+            }
+            return formatNumber(Math.round(Math.max(0, lower))) +
+                " – " +
+                formatNumber(Math.round(Math.max(0, upper)));
+        }
+
         function collectExistingPresetTitles() {
             var titles = new Set();
             try {
@@ -459,33 +476,95 @@
                 },
                 success: function (response) {
                     if (response.success) {
-                        var validCount = response.data.valid_count || 0;
+                    var validCount = Number(response.data.valid_count || 0);
+                    var totalChecked = Number(response.data.total_checked || 0);
+                    var totalPossible = Number(response.data.total_possible || 0);
+                    var passRate = typeof response.data.pass_rate !== "undefined"
+                        ? Number(response.data.pass_rate)
+                        : (totalChecked > 0
+                            ? (validCount / totalChecked) * 100
+                            : 0);
+                    var estimateInfo = response.data.estimate || {};
+                    var estimatedPrimary = "";
+                    var detailParts = [];
 
-                        $container.find('[data-stat="estimated"]').text(
-                            validCount.toLocaleString() + " valid",
-                        );
-                        $container.find('[data-stat="existing"]').text(
-                            response.data.existing.toLocaleString(),
-                        );
-
-                        $generateBtn.prop("disabled", false);
-                        canGenerateAfterRun = true;
-
-                        var successMessage = response.data.message ||
-                            "Estimate complete.";
-                        setStatus(successMessage, "success");
-                        appendLog(
-                            "Estimate complete: " +
-                                validCount.toLocaleString() +
-                                " valid presets.",
-                            "success",
-                            { force: true },
-                        );
-                        scheduleStatsUpdate();
-
-                        if (response.data.message) {
-                            alert(response.data.message);
+                    if (estimateInfo.exact && typeof estimateInfo.valid_total !== "undefined") {
+                        estimatedPrimary = formatNumber(estimateInfo.valid_total) + " exact valid";
+                        if (estimateInfo.checked_total) {
+                            detailParts.push(
+                                "Checked " + formatNumber(estimateInfo.checked_total)
+                            );
                         }
+                        if (estimateInfo.duration) {
+                            detailParts.push(estimateInfo.duration + "s");
+                        }
+                    } else {
+                        var estimatedValue = estimateInfo.valid_estimate
+                            ? Math.round(estimateInfo.valid_estimate)
+                            : validCount;
+
+                        if (estimateInfo.truncated) {
+                            estimatedPrimary = "≥ " + formatNumber(estimatedValue) + " valid";
+                            detailParts.push(
+                                (MKL_PC_BulkGenerator.strings.estimate_truncated || "Enumerated") +
+                                    " " + formatNumber(estimatedValue)
+                            );
+                        } else {
+                            var passRateText = (!isNaN(passRate) && isFinite(passRate))
+                                ? Number(passRate).toFixed(passRate >= 10 ? 1 : 2)
+                                : "0";
+                            estimatedPrimary =
+                                formatNumber(estimatedValue) +
+                                " valid (~" + passRateText + "%)";
+
+                            if (
+                                typeof estimateInfo.lower_ci !== "undefined" &&
+                                estimateInfo.lower_ci !== null &&
+                                typeof estimateInfo.upper_ci !== "undefined" &&
+                                estimateInfo.upper_ci !== null
+                            ) {
+                                detailParts.push(
+                                    "95% CI: " +
+                                        formatRange(estimateInfo.lower_ci, estimateInfo.upper_ci)
+                                );
+                            }
+                            if (estimateInfo.samples) {
+                                detailParts.push(
+                                    formatNumber(estimateInfo.samples) + " samples"
+                                );
+                            }
+                        }
+                    }
+
+                    if (totalPossible) {
+                        detailParts.push(
+                            "Total combos: " + formatNumber(totalPossible)
+                        );
+                    }
+
+                    $container.find('[data-stat="existing"]').text(
+                        formatNumber(response.data.existing || 0),
+                    );
+
+                    var displayText = estimatedPrimary;
+                    if (detailParts.length) {
+                        displayText += " [" + detailParts.join(" • ") + "]";
+                    }
+
+                    $container.find('[data-stat="estimated"]').text(displayText);
+
+                    $generateBtn.prop("disabled", false);
+                    canGenerateAfterRun = true;
+
+                    var successMessage = response.data.message ||
+                        (MKL_PC_BulkGenerator.strings.estimate_complete || "Estimate complete.");
+                    setStatus(successMessage, "success");
+                    appendLog(
+                        "Estimate ready: " + displayText,
+                        "success",
+                        { force: true },
+                    );
+                    scheduleStatsUpdate();
                     } else {
                         var errorMessage = response.data &&
                                 response.data.message
