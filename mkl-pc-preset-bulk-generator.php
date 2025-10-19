@@ -4,7 +4,7 @@
  * Plugin Name:       Product Configurator - Bulk Preset Generator
  * Plugin URI:        http://wc-product-configurator.com/
  * Description:       Automatically generate all valid configuration presets based on conditional logic rules
- * Version:           1.0.0
+ * Version:           1.0.5
  * Author:            Digital Services Northwest
  * Author URI:        https://digitalservicesnorthwest.co.uk
  * Text Domain:       mkl-pc-preset-generator
@@ -16,7 +16,7 @@ if (! defined('ABSPATH')) {
     die;
 }
 
-define('MKL_PC_PRESET_GENERATOR_VERSION', '1.0.0');
+define('MKL_PC_PRESET_GENERATOR_VERSION', '1.0.5');
 define('MKL_PC_PRESET_GENERATOR_PATH', plugin_dir_path(__FILE__));
 define('MKL_PC_PRESET_GENERATOR_URL', plugin_dir_url(__FILE__));
 

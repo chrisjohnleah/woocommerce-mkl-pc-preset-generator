@@ -427,87 +427,54 @@ class MKL_PC_Preset_Generator_Admin_UI
             // Increase time limit for this request
             set_time_limit(300);
 
-            $generator = new MKL_PC_Preset_Combination_Generator($product_id);
-            $validator = new MKL_PC_Preset_Conditional_Validator($product_id);
+            $smart_generator = new MKL_PC_Smart_Combination_Generator($product_id);
             $saver = new MKL_PC_Preset_Saver($product_id);
+            $config_builder = new MKL_PC_Configuration_Builder($product_id);
 
-            // Generate ONLY this batch of combinations (not all 1.9 trillion!)
-            error_log("Generating batch starting at offset: $offset");
-            $batch = $generator->generate_combinations_batch($offset, $batch_size);
-            error_log("Generated " . count($batch) . " combinations for this batch");
+            // Generate ONLY this batch of combinations (already filtered by conditional logic)
+            error_log("Generating smart batch starting at offset {$offset} (limit {$batch_size})");
+            $batch = $smart_generator->generate_batch($offset, $batch_size);
+            error_log("Smart batch returned " . count($batch) . " valid combinations");
 
             $saved = 0;
             $skipped = 0;
             $last_valid_combination = null;
+            $consumed = 0;
 
-            $combination_index = 0;
+            // Double-check mandatory layers (safety net, smart generator should already enforce this)
+            $core_layers_required = apply_filters('mkl_pc_preset_generator_core_layers', ['Size', 'Colour', 'Worktop'], $product_id);
+
             foreach ($batch as $combination) {
-                $combination_index++;
+                $consumed++;
 
                 // Require at least the CORE layers to have selections
                 // These are essential for any valid product configuration
-                $core_layers_required = ['Size', 'Colour', 'Worktop'];
-                $core_selections = [];
+                $core_selections = array_fill_keys($core_layers_required, false);
 
                 foreach ($combination as $choice) {
-                    if (in_array($choice['layer_name'], $core_layers_required)) {
+                    if (isset($core_selections[$choice['layer_name']])) {
                         if ($choice['choice_id'] !== null && $choice['choice_name'] !== 'None') {
-                            $core_selections[] = $choice['layer_name'];
+                            $core_selections[$choice['layer_name']] = true;
                         }
                     }
                 }
 
                 // Skip if any core layer is missing or set to None
-                if (count($core_selections) < count($core_layers_required)) {
+                if (in_array(false, $core_selections, true)) {
                     $skipped++;
-                    if ($combination_index <= 3) {
-                        $missing = array_diff($core_layers_required, $core_selections);
-                        error_log("Combination #$combination_index: SKIPPED - Missing core layers: " . implode(', ', $missing));
-                    }
+                    $missing = array_keys(array_filter($core_selections, function ($selected) {
+                        return ! $selected;
+                    }));
+                    error_log('Smart Generator: skipped combination missing core layers (' . implode(', ', $missing) . ')');
                     continue;
                 }
-
-                // Validate against conditional logic
-                $is_valid = $validator->validate_combination($combination);
 
                 // Generate combination string for logging
                 $combo_str = implode(' + ', array_map(function ($c) {
                     return $c['layer_name'] . ':' . $c['choice_name'];
                 }, $combination));
 
-                if ($combination_index <= 5 || $is_valid) {
-                    if ($is_valid) {
-                        error_log("✓ VALID Combination #$combination_index: $combo_str");
-                    } elseif ($combination_index <= 5) {
-                        error_log("✗ Combination #$combination_index: INVALID - $combo_str");
-                    }
-                }
-                
-                // Log problematic combinations (Rear Upstand + Backlip with Steel)
-                $has_steel_worktop = false;
-                $has_rear_upstand = false;
-                $has_backlip = false;
-                
-                foreach ($combination as $choice) {
-                    if ($choice['layer_name'] === 'Worktop' && $choice['choice_name'] === 'Steel') {
-                        $has_steel_worktop = true;
-                    }
-                    if ($choice['layer_name'] === 'Rear Upstand' && $choice['choice_name'] === 'Yes') {
-                        $has_rear_upstand = true;
-                    }
-                    if ($choice['layer_name'] === 'Backlip' && $choice['choice_name'] === 'Yes') {
-                        $has_backlip = true;
-                    }
-                }
-                
-                if ($has_steel_worktop && $has_rear_upstand && $has_backlip) {
-                    error_log("⚠️ PROBLEMATIC: Steel + Rear Upstand + Backlip - Marked as " . ($is_valid ? 'VALID' : 'INVALID'));
-                }
-
-                if (! $is_valid) {
-                    $skipped++;
-                    continue;
-                }
+                error_log("✓ Smart Generator valid combination: {$combo_str}");
 
                 // Found a valid combination - send to frontend immediately
                 // The frontend will use PC.fe.setConfig() + PC.fe.save_data.save()
@@ -520,7 +487,7 @@ class MKL_PC_Preset_Generator_Admin_UI
                 break;
             }
 
-            $new_offset = $offset + $batch_size;
+            $new_offset = $offset + ($consumed > 0 ? $consumed : 0);
 
             // Since we can't know the total upfront, we check if we got any results
             $is_complete = count($batch) < $batch_size;
@@ -549,6 +516,11 @@ class MKL_PC_Preset_Generator_Admin_UI
             if ($last_valid_combination) {
                 $response['valid_combination'] = $last_valid_combination;
                 $response['preset_name'] = $saver->generate_preset_name($last_valid_combination, []);
+                try {
+                    $response['expanded_configuration'] = $config_builder->build_complete_configuration($last_valid_combination);
+                } catch (Exception $e) {
+                    error_log('Bulk Generator: Failed to build expanded configuration - ' . $e->getMessage());
+                }
                 error_log("Sending valid combination to frontend for expansion");
             }
 
@@ -573,6 +545,7 @@ class MKL_PC_Preset_Generator_Admin_UI
         $product_id = isset($_POST['product_id']) ? intval($_POST['product_id']) : 0;
         $preset_name = isset($_POST['preset_name']) ? sanitize_text_field($_POST['preset_name']) : '';
         $configuration = isset($_POST['configuration']) ? $_POST['configuration'] : '';
+        $skip_thumbnail = !empty($_POST['skip_thumbnail']);
 
         if (! $product_id || ! $preset_name || ! $configuration) {
             wp_send_json_error(['message' => __('Missing required parameters', 'mkl-pc-preset-generator')]);
@@ -582,6 +555,8 @@ class MKL_PC_Preset_Generator_Admin_UI
         if (is_string($configuration)) {
             $configuration = json_decode(stripslashes($configuration), true);
         }
+
+        $configuration = $this->normalize_configuration_layers($configuration);
 
         error_log("Saving expanded preset: $preset_name with " . count($configuration) . " layers");
 
@@ -602,7 +577,7 @@ class MKL_PC_Preset_Generator_Admin_UI
             ]);
 
             if (isset($saved['saved']) && $saved['saved']) {
-                $preset_id = $saved['ID'];
+                $preset_id = isset($saved['config_id']) ? intval($saved['config_id']) : (isset($saved['ID']) ? intval($saved['ID']) : 0);
 
                 // Ensure post status is 'preset'
                 wp_update_post([
@@ -611,12 +586,14 @@ class MKL_PC_Preset_Generator_Admin_UI
                 ]);
 
                 // Trigger image generation
-                if (isset($saved['save_image_async']) && $saved['save_image_async']) {
-                    $preset->save_image($configuration, $preset_id);
+                if (!$skip_thumbnail && isset($saved['save_image_async']) && $saved['save_image_async'] && $preset_id) {
+                    $preset->save_image($preset->content, $preset_id);
                 }
 
                 error_log("Successfully saved expanded preset #$preset_id");
-                wp_send_json_success(['preset_id' => $preset_id]);
+                $response = ['preset_id' => $preset_id];
+
+                wp_send_json_success($response);
             } else {
                 $error_msg = isset($saved['error']) ? $saved['error'] : 'Unknown error';
                 error_log("Failed to save expanded preset: $error_msg");
@@ -651,5 +628,85 @@ class MKL_PC_Preset_Generator_Admin_UI
         wp_send_json_success([
             'deleted' => $deleted,
         ]);
+    }
+
+    /**
+     * Ensure configuration layers follow image order to prevent incorrect overlay rendering
+     *
+     * @param array $configuration
+     * @return array
+     */
+    private function normalize_configuration_layers($configuration)
+    {
+        if (!is_array($configuration) || empty($configuration)) {
+            return $configuration;
+        }
+
+        $indexed = [];
+        foreach ($configuration as $index => $layer) {
+            $indexed[] = [
+                'order' => $this->resolve_layer_order_value($layer),
+                'index' => $index,
+                'layer' => $layer,
+            ];
+        }
+
+        usort($indexed, function ($a, $b) {
+            if ($a['order'] === $b['order']) {
+                return $a['index'] <=> $b['index'];
+            }
+
+            return ($a['order'] < $b['order']) ? -1 : 1;
+        });
+
+        return array_map(function ($item) {
+            return $item['layer'];
+        }, $indexed);
+    }
+
+    /**
+     * Resolve ordering value for a configuration layer (array or object)
+     *
+     * @param mixed $layer
+     * @return int
+     */
+    private function resolve_layer_order_value($layer)
+    {
+        $image_order = $this->get_layer_property($layer, 'image_order');
+        if ($image_order !== null && $image_order !== '') {
+            return intval($image_order);
+        }
+
+        $order = $this->get_layer_property($layer, 'order');
+        if ($order !== null && $order !== '') {
+            return intval($order);
+        }
+
+        $layer_id = $this->get_layer_property($layer, 'layer_id');
+        if ($layer_id !== null && $layer_id !== '') {
+            return intval($layer_id);
+        }
+
+        return 100000;
+    }
+
+    /**
+     * Safely fetch property value from array or object
+     *
+     * @param mixed $layer
+     * @param string $property
+     * @return mixed|null
+     */
+    private function get_layer_property($layer, $property)
+    {
+        if (is_array($layer) && array_key_exists($property, $layer)) {
+            return $layer[$property];
+        }
+
+        if (is_object($layer) && isset($layer->$property)) {
+            return $layer->$property;
+        }
+
+        return null;
     }
 }

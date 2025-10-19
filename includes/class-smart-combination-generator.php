@@ -2,14 +2,10 @@
 
 /**
  * Smart Combination Generator
- * 
+ *
  * Generates ONLY valid combinations by using conditional logic to guide generation.
- * This is much faster than brute-force + filter approach.
- * 
- * Uses Constraint Satisfaction Problem (CSP) approach:
- * - Builds combinations incrementally
- * - Checks constraints at each step
- * - Prunes invalid branches early
+ * This mimics the frontend configurator by pruning impossible branches as soon
+ * as they violate a rule, instead of brute-forcing every theoretical combination.
  */
 
 if (! defined('ABSPATH')) {
@@ -19,63 +15,102 @@ if (! defined('ABSPATH')) {
 class MKL_PC_Smart_Combination_Generator
 {
     private $product_id;
-    private $layers;
-    private $conditions;
+    private $layers = [];
     private $validator;
     private $db;
+    private $core_layer_names = [];
+    private $content_map = [];
+    private $conditions = [];
 
     public function __construct($product_id)
     {
         $this->product_id = $product_id;
         $this->db = \MKL\PC\Plugin::instance()->db;
         $this->validator = new MKL_PC_Preset_Conditional_Validator($product_id);
+        $this->core_layer_names = apply_filters(
+            'mkl_pc_preset_generator_core_layers',
+            ['Size', 'Colour', 'Worktop'],
+            $product_id
+        );
+
         $this->load_layers();
         $this->load_conditions();
     }
 
     /**
-     * Load user-facing layers
+     * Prepare layer metadata and available choices for CSP traversal.
      */
     private function load_layers()
     {
-        $all_layers = $this->db->get('layers', $this->product_id);
+        $combination_generator = new MKL_PC_Preset_Combination_Generator($this->product_id);
+        $user_layers = $combination_generator->get_user_layers();
         $this->layers = [];
 
-        if (! is_array($all_layers)) {
+        if (empty($user_layers) || ! is_array($user_layers)) {
+            error_log("Smart Generator: No user-facing layers found for product {$this->product_id}");
             return;
         }
 
-        foreach ($all_layers as $layer) {
-            $type = isset($layer['type']) ? $layer['type'] : 'user';
+        $content_rows = $this->db->get('content', $this->product_id);
 
-            // Skip non-user layers
-            if (in_array($type, ['visual', 'group', 'form'])) {
+        if (is_array($content_rows)) {
+            foreach ($content_rows as $row) {
+                if (isset($row['layerId'])) {
+                    $this->content_map[$row['layerId']] = $row;
+                }
+            }
+        }
+
+        foreach ($user_layers as $layer) {
+            $layer_id = isset($layer['_id']) ? $layer['_id'] : (isset($layer['id']) ? $layer['id'] : null);
+            if (! $layer_id) {
                 continue;
             }
 
-            // Get layer choices
-            $choices = $this->db->get_indexed('content', 'layerId', $this->product_id);
-            $layer_choices = isset($choices[$layer['id']]) ? $choices[$layer['id']]['choices'] : [];
-
-            // Skip layers with no choices
-            if (empty($layer_choices)) {
-                continue;
-            }
-
-            // Filter out "None" options for core layers
+            $layer_type = isset($layer['type']) ? $layer['type'] : 'simple';
             $layer_name = isset($layer['name']) ? $layer['name'] : '';
-            $is_core_layer = in_array($layer_name, ['Size', 'Colour', 'Worktop']);
+            $is_required = ! empty($layer['required']);
+            $is_core_layer = in_array($layer_name, $this->core_layer_names, true);
+
+            $choices_entry = isset($this->content_map[$layer_id]) ? $this->content_map[$layer_id] : [];
+            $available_choices = isset($choices_entry['choices']) && is_array($choices_entry['choices'])
+                ? $choices_entry['choices']
+                : [];
 
             $valid_choices = [];
-            foreach ($layer_choices as $choice) {
-                $choice_name = isset($choice['name']) ? $choice['name'] : '';
 
-                // Skip "None" for core layers
-                if ($is_core_layer && $choice_name === 'None') {
+            // Allow "no selection" for optional simple layers
+            if (! $is_required && ! $is_core_layer && $layer_type === 'simple') {
+                $valid_choices[] = [
+                    'id' => null,
+                    'name' => __('None', 'mkl-pc-preset-generator'),
+                ];
+            }
+
+            foreach ($available_choices as $choice) {
+                if (! empty($choice['is_group'])) {
                     continue;
                 }
 
-                $valid_choices[] = $choice;
+                $choice_id = isset($choice['id'])
+                    ? $choice['id']
+                    : (isset($choice['_id']) ? $choice['_id'] : null);
+
+                if ($choice_id === null) {
+                    continue;
+                }
+
+                $choice_name = isset($choice['name']) ? $choice['name'] : '';
+
+                // Core layers must never use the "None" placeholder
+                if ($is_core_layer && in_array($choice_name, ['None', 'No'], true)) {
+                    continue;
+                }
+
+                $valid_choices[] = [
+                    'id' => $choice_id,
+                    'name' => $choice_name,
+                ];
             }
 
             if (empty($valid_choices)) {
@@ -83,23 +118,23 @@ class MKL_PC_Smart_Combination_Generator
             }
 
             $this->layers[] = [
-                'id' => $layer['id'],
+                'id' => $layer_id,
                 'name' => $layer_name,
+                'type' => $layer_type,
+                'is_core' => $is_core_layer,
+                'is_required' => $is_required,
                 'choices' => $valid_choices,
-                'is_core' => $is_core_layer
             ];
         }
 
-        error_log("Smart Generator: Loaded " . count($this->layers) . " layers for constraint-based generation");
-
-        // Debug: Show first 3 layers
+        error_log(sprintf('Smart Generator: Prepared %d layers for product %d', count($this->layers), $this->product_id));
         foreach (array_slice($this->layers, 0, 3) as $layer) {
-            error_log("  Layer: " . $layer['name'] . " (" . count($layer['choices']) . " choices)");
+            error_log(sprintf('  Layer %s (%d choices)', $layer['name'], count($layer['choices'])));
         }
     }
 
     /**
-     * Load conditional logic rules
+     * Load conditional rule set for logging/debugging purposes.
      */
     private function load_conditions()
     {
@@ -113,130 +148,139 @@ class MKL_PC_Smart_Combination_Generator
     }
 
     /**
-     * Generate all valid combinations using CSP approach
-     * 
-     * @return array Array of valid combinations
+     * Generate every valid combination (memory heavy - mainly for debugging).
+     *
+     * @return array<int, array<int, array<string, mixed>>>
      */
     public function generate_valid_combinations()
     {
         $valid_combinations = [];
+        $valid_counter = 0;
+        $collected = 0;
         $start_time = microtime(true);
 
-        error_log("=== SMART GENERATION START ===");
-        error_log("Using constraint-based approach to generate ONLY valid combinations");
+        error_log('=== SMART GENERATION START ===');
+        error_log('Using constraint-based approach to generate ONLY valid combinations');
 
-        // Start recursive generation
-        $this->generate_recursive(0, [], $valid_combinations);
+        $this->explore(0, [], $valid_combinations, 0, null, $valid_counter, $collected);
 
         $elapsed = round(microtime(true) - $start_time, 2);
-        error_log("Smart Generator: Generated " . count($valid_combinations) . " valid combinations in {$elapsed}s");
-        error_log("=== SMART GENERATION END ===");
+        error_log(sprintf('Smart Generator: Generated %d valid combinations in %ss', count($valid_combinations), $elapsed));
+        error_log('=== SMART GENERATION END ===');
 
         return $valid_combinations;
     }
 
     /**
-     * Recursively generate combinations with constraint checking
-     * 
-     * @param int $layer_index Current layer index
-     * @param array $current_selection Current partial combination
-     * @param array &$valid_combinations Output array for valid combinations
-     */
-    private function generate_recursive($layer_index, $current_selection, &$valid_combinations)
-    {
-        // Base case: we've made selections for all layers
-        if ($layer_index >= count($this->layers)) {
-            // Final validation check
-            if ($this->validator->validate_combination($current_selection)) {
-                $valid_combinations[] = $current_selection;
-
-                // Debug: Log first valid combo
-                static $first_valid_logged = false;
-                if (!$first_valid_logged) {
-                    error_log("First valid combination found!");
-                    $first_valid_logged = true;
-                }
-            }
-            return;
-        }
-
-        $current_layer = $this->layers[$layer_index];
-
-        // Debug: Log when exploring first layer
-        static $first_layer_logged = false;
-        if ($layer_index == 0 && !$first_layer_logged) {
-            error_log("Exploring layer 0: " . $current_layer['name'] . " with " . count($current_layer['choices']) . " choices");
-            $first_layer_logged = true;
-        }
-
-        // For each possible choice in this layer
-        foreach ($current_layer['choices'] as $choice) {
-            // Build the selection with this choice
-            $selection = array_merge($current_selection, [[
-                'layer_id' => $current_layer['id'],
-                'layer_name' => $current_layer['name'],
-                'choice_id' => isset($choice['id']) ? $choice['id'] : (isset($choice['_id']) ? $choice['_id'] : null),
-                'choice_name' => isset($choice['name']) ? $choice['name'] : ''
-            ]]);
-
-            // Early pruning using partial validation
-            $is_valid_partial = $this->validator->validate_partial_combination($selection);
-
-            // Debug first few rejections
-            static $rejection_count = 0;
-            if (!$is_valid_partial && $rejection_count < 5) {
-                error_log("PRUNED at layer $layer_index: " . json_encode($selection));
-                $rejection_count++;
-            }
-
-            if ($is_valid_partial) {
-                $this->generate_recursive($layer_index + 1, $selection, $valid_combinations);
-            }
-        }
-    }
-
-    /**
-     * Check if a partial combination is valid
-     * This allows early pruning of invalid branches
-     * 
-     * @param array $partial_selection Partial combination
-     * @return bool True if partial selection doesn't violate any constraints
-     */
-    private function is_partial_valid($partial_selection)
-    {
-        // Quick validation - does this partial selection violate any conditions?
-        // We use the same validator but on a partial combination
-        return $this->validator->validate_combination($partial_selection);
-    }
-
-    /**
-     * Get count of valid combinations (for estimation)
-     * 
-     * @return int
+     * Count valid combinations without keeping them in memory.
      */
     public function count_valid_combinations()
     {
-        $combinations = $this->generate_valid_combinations();
-        return count($combinations);
+        $collector = null;
+        $valid_counter = 0;
+        $collected = 0;
+        $this->explore(0, [], $collector, 0, null, $valid_counter, $collected);
+
+        return $valid_counter;
     }
 
     /**
-     * Generate combinations in batches for memory efficiency
-     * 
-     * @param int $offset Starting offset
-     * @param int $limit Batch size
-     * @return array Batch of combinations
+     * Generate a batch of valid combinations starting at the given offset.
+     *
+     * @param int $offset Zero-based index of the first valid combination to return.
+     * @param int $limit  Maximum number of combinations to return.
+     *
+     * @return array<int, array<int, array<string, mixed>>>
      */
     public function generate_batch($offset, $limit)
     {
-        // For smart generation, we generate all then slice
-        // (Could be optimized further with generator pattern)
-        static $all_combinations = null;
+        $offset = max(0, intval($offset));
+        $limit = max(0, intval($limit));
 
-        if ($all_combinations === null) {
-            $all_combinations = $this->generate_valid_combinations();
+        if ($limit === 0) {
+            return [];
         }
 
-        return array_slice($all_combinations, $offset, $limit);
+        $collector = [];
+        $valid_counter = 0;
+        $collected = 0;
+
+        $this->explore(0, [], $collector, $offset, $limit, $valid_counter, $collected);
+
+        return $collector;
+    }
+
+    /**
+     * Depth-first traversal with backtracking. Stops early when we collected enough results.
+     *
+     * @param int        $layer_index
+     * @param array      $current_selection
+     * @param array|null &$collector
+     * @param int        $offset
+     * @param int|null   $limit
+     * @param int        &$valid_counter
+     * @param int        &$collected
+     *
+     * @return bool True when traversal can stop early.
+     */
+    private function explore($layer_index, $current_selection, &$collector, $offset, $limit, &$valid_counter, &$collected)
+    {
+        $total_layers = count($this->layers);
+
+        if ($layer_index >= $total_layers) {
+            if ($this->validator->validate_combination($current_selection)) {
+                if ($valid_counter >= $offset) {
+                    if ($limit === null || $collected < $limit) {
+                        if (is_array($collector)) {
+                            $collector[] = $current_selection;
+                        }
+
+                        if ($limit !== null) {
+                            $collected++;
+                        }
+                    }
+                }
+
+                $valid_counter++;
+
+                if ($limit !== null && $collected >= $limit) {
+                    return true;
+                }
+            }
+
+            return false;
+        }
+
+        $layer = $this->layers[$layer_index];
+
+        foreach ($layer['choices'] as $choice) {
+            $selection = $current_selection;
+            $selection[] = [
+                'layer_id' => $layer['id'],
+                'layer_name' => $layer['name'],
+                'choice_id' => $choice['id'],
+                'choice_name' => $choice['name'],
+            ];
+
+            if (! $this->validator->validate_partial_combination($selection)) {
+                continue;
+            }
+
+            $should_stop = $this->explore(
+                $layer_index + 1,
+                $selection,
+                $collector,
+                $offset,
+                $limit,
+                $valid_counter,
+                $collected
+            );
+
+            if ($should_stop) {
+                return true;
+            }
+        }
+
+        return false;
     }
 }

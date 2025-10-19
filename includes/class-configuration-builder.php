@@ -53,6 +53,8 @@ class MKL_PC_Configuration_Builder
             $layer_id = $layer['_id'];
             $layer_type = isset($layer['type']) ? $layer['type'] : 'simple';
             $layer_name = isset($layer['name']) ? $layer['name'] : '';
+            $layer_order = isset($layer['order']) ? intval($layer['order']) : 0;
+            $layer_image_order = isset($layer['image_order']) ? intval($layer['image_order']) : $layer_order;
 
             // Skip if layer is hidden by conditional logic
             // We'll check this based on the user's selections
@@ -78,6 +80,8 @@ class MKL_PC_Configuration_Builder
                     'angle_id' => 1,
                     'layer_name' => $layer_name,
                     'image' => 0,
+                    'order' => $layer_order,
+                    'image_order' => $layer_image_order,
                     'name' => '',
                 ];
             } elseif (isset($layer['not_a_choice']) && $layer['not_a_choice']) {
@@ -87,6 +91,8 @@ class MKL_PC_Configuration_Builder
 
                 if ($active_choice) {
                     $image_id = $this->get_choice_image_id($active_choice);
+                    $visual_order = isset($active_choice['order']) ? intval($active_choice['order']) : $layer_order;
+                    $visual_image_order = isset($active_choice['image_order']) ? intval($active_choice['image_order']) : $layer_image_order;
                     $complete_config[] = [
                         'is_choice' => false,
                         'layer_id' => $layer_id,
@@ -94,6 +100,8 @@ class MKL_PC_Configuration_Builder
                         'angle_id' => 1,
                         'layer_name' => $layer_name,
                         'image' => $image_id,
+                        'order' => $visual_order,
+                        'image_order' => $visual_image_order,
                         'name' => isset($active_choice['name']) ? $active_choice['name'] : '',
                     ];
                 }
@@ -112,6 +120,8 @@ class MKL_PC_Configuration_Builder
                     }
 
                     if ($selected_choice) {
+                        $choice_order = isset($selected_choice['order']) ? intval($selected_choice['order']) : $layer_order;
+                        $choice_image_order = isset($selected_choice['image_order']) ? intval($selected_choice['image_order']) : $layer_image_order;
                         $complete_config[] = [
                             'is_choice' => true,
                             'layer_id' => $layer_id,
@@ -119,6 +129,8 @@ class MKL_PC_Configuration_Builder
                             'angle_id' => 1,
                             'layer_name' => $layer_name,
                             'image' => '', // User layers have empty string for image
+                            'order' => $choice_order,
+                            'image_order' => $choice_image_order,
                             'name' => isset($selected_choice['name']) ? $selected_choice['name'] : '',
                         ];
 
@@ -133,7 +145,7 @@ class MKL_PC_Configuration_Builder
             }
         }
 
-        return $complete_config;
+        return $this->normalize_configuration_order($complete_config);
     }
 
     /**
@@ -236,5 +248,86 @@ class MKL_PC_Configuration_Builder
         }
 
         return 0;
+    }
+
+    /**
+     * Ensure configuration items follow image_order/order sequence so rendering matches admin layer stack
+     *
+     * @param array $configuration
+     * @return array
+     */
+    private function normalize_configuration_order($configuration)
+    {
+        if (!is_array($configuration) || empty($configuration)) {
+            return $configuration;
+        }
+
+        $indexed = [];
+        foreach ($configuration as $index => $layer) {
+            $indexed[] = [
+                'order' => $this->resolve_layer_order_value($layer),
+                'index' => $index,
+                'layer' => $layer,
+            ];
+        }
+
+        usort($indexed, function ($a, $b) {
+            if ($a['order'] === $b['order']) {
+                return $a['index'] <=> $b['index'];
+            }
+
+            return ($a['order'] < $b['order']) ? -1 : 1;
+        });
+
+        return array_map(function ($item) {
+            return $item['layer'];
+        }, $indexed);
+    }
+
+    /**
+     * Resolve comparable order value for config layer
+     *
+     * @param array|object $layer
+     * @return int
+     */
+    private function resolve_layer_order_value($layer)
+    {
+        $image_order = $this->get_layer_property($layer, 'image_order');
+        if ($image_order !== null && $image_order !== '') {
+            return intval($image_order);
+        }
+
+        $order = $this->get_layer_property($layer, 'order');
+        if ($order !== null && $order !== '') {
+            return intval($order);
+        }
+
+        $layer_id = $this->get_layer_property($layer, 'layer_id');
+        if ($layer_id !== null && $layer_id !== '') {
+            return intval($layer_id);
+        }
+
+        // Fall back to high number to keep unknown items at the end while preserving tie order
+        return 100000;
+    }
+
+    /**
+     * Safely access property on array or object
+     *
+     * @param array|object $layer
+     * @param string $property
+     * @return mixed|null
+     */
+    private function get_layer_property($layer, $property)
+    {
+        if (is_array($layer) && array_key_exists($property, $layer)) {
+            return $layer[$property];
+        }
+
+        if (is_object($layer) && isset($layer->$property)) {
+            return $layer->$property;
+        }
+
+        return null;
     }
 }

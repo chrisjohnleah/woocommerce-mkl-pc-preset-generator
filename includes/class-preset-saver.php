@@ -50,6 +50,7 @@ class MKL_PC_Preset_Saver
 
         // Convert combination to complete configurator format (including visual layers)
         $configuration_data = $this->config_builder->build_complete_configuration($combination);
+        $configuration_data = $this->normalize_configuration_layers($configuration_data);
 
         error_log("Attempting to save preset: $preset_name with " . count($configuration_data) . " layers");
 
@@ -102,7 +103,7 @@ class MKL_PC_Preset_Saver
             return new WP_Error('save_failed', __('Failed to save preset: ', 'mkl-pc-preset-generator') . $error_msg);
         }
 
-        $preset_id = isset($saved['ID']) ? $saved['ID'] : 0;
+        $preset_id = isset($saved['config_id']) ? intval($saved['config_id']) : (isset($saved['ID']) ? intval($saved['ID']) : 0);
 
         if (! $preset_id) {
             return new WP_Error('no_id', __('Preset ID not returned', 'mkl-pc-preset-generator'));
@@ -123,7 +124,7 @@ class MKL_PC_Preset_Saver
         if (isset($saved['save_image_async']) && $saved['save_image_async']) {
             error_log("Triggering image generation for preset #$preset_id");
             try {
-                $image_id = $preset->save_image($configuration_data, $preset_id);
+                $image_id = $preset->save_image($preset->content, $preset_id);
                 if ($image_id && !is_wp_error($image_id)) {
                     error_log("Successfully generated image #$image_id for preset #$preset_id");
                 } else {
@@ -136,6 +137,86 @@ class MKL_PC_Preset_Saver
         }
 
         return $preset_id;
+    }
+
+    /**
+     * Sort configuration layers so image merge respects admin stacking order
+     *
+     * @param array $configuration
+     * @return array
+     */
+    private function normalize_configuration_layers($configuration)
+    {
+        if (!is_array($configuration) || empty($configuration)) {
+            return $configuration;
+        }
+
+        $indexed = [];
+        foreach ($configuration as $index => $layer) {
+            $indexed[] = [
+                'order' => $this->resolve_layer_order_value($layer),
+                'index' => $index,
+                'layer' => $layer,
+            ];
+        }
+
+        usort($indexed, function ($a, $b) {
+            if ($a['order'] === $b['order']) {
+                return $a['index'] <=> $b['index'];
+            }
+
+            return ($a['order'] < $b['order']) ? -1 : 1;
+        });
+
+        return array_map(function ($item) {
+            return $item['layer'];
+        }, $indexed);
+    }
+
+    /**
+     * Determine ordering value for configuration layer
+     *
+     * @param mixed $layer
+     * @return int
+     */
+    private function resolve_layer_order_value($layer)
+    {
+        $image_order = $this->get_layer_property($layer, 'image_order');
+        if ($image_order !== null && $image_order !== '') {
+            return intval($image_order);
+        }
+
+        $order = $this->get_layer_property($layer, 'order');
+        if ($order !== null && $order !== '') {
+            return intval($order);
+        }
+
+        $layer_id = $this->get_layer_property($layer, 'layer_id');
+        if ($layer_id !== null && $layer_id !== '') {
+            return intval($layer_id);
+        }
+
+        return 100000;
+    }
+
+    /**
+     * Safely fetch value from layer arrays/objects
+     *
+     * @param mixed $layer
+     * @param string $property
+     * @return mixed|null
+     */
+    private function get_layer_property($layer, $property)
+    {
+        if (is_array($layer) && array_key_exists($property, $layer)) {
+            return $layer[$property];
+        }
+
+        if (is_object($layer) && isset($layer->$property)) {
+            return $layer->$property;
+        }
+
+        return null;
     }
 
     /**

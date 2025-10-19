@@ -1,6 +1,8 @@
 (function ($, _) {
     "use strict";
 
+    console.log("MKL PC Bulk Generator v1.0.5 loaded");
+
     // Wait for PC to be ready
     wp.hooks.addAction("PC.fe.start", "MKL/PC/BulkGenerator", function (view) {
         // Check if we're on the preset admin page
@@ -15,6 +17,41 @@
         // Initialize handlers
         initHandlers();
     }, 60);
+
+    function enrichConfigurationOrdering(configuration) {
+        if (!Array.isArray(configuration) || !PC || !PC.fe || !PC.fe.layers) {
+            return configuration;
+        }
+
+        configuration.forEach(function (item) {
+            if (!item || !item.layer_id) {
+                return;
+            }
+
+            var layerModel = PC.fe.layers.get(item.layer_id);
+            if (layerModel && typeof layerModel.get === "function") {
+                var layerOrder = parseInt(layerModel.get("order"), 10);
+                var layerImageOrder = parseInt(layerModel.get("image_order"), 10);
+
+                if (!Number.isNaN(layerOrder)) {
+                    item.order = layerOrder;
+                }
+
+                if (!Number.isNaN(layerImageOrder)) {
+                    item.image_order = layerImageOrder;
+                } else if (
+                    !Number.isNaN(layerOrder) &&
+                    (item.image_order === undefined ||
+                        item.image_order === null ||
+                        item.image_order === "")
+                ) {
+                    item.image_order = layerOrder;
+                }
+            }
+        });
+
+        return configuration;
+    }
 
     function initHandlers() {
         var $container = $(".mkl-pc-bulk-generator");
@@ -218,15 +255,18 @@
 
                         // HYBRID APPROACH: If backend sent a valid combination, expand it using PC.fe
                         if (
-                            response.data.valid_combination && PC && PC.fe &&
-                            PC.fe.save_data
+                            response.data.expanded_configuration &&
+                            Array.isArray(response.data.expanded_configuration)
                         ) {
-                            expandAndSavePreset(
+                            response.data.expanded_configuration =
+                                enrichConfigurationOrdering(
+                                    response.data.expanded_configuration,
+                                );
+                            applyAndSavePreset(
                                 productId,
-                                response.data.valid_combination,
-                                null, // Name will be generated from expanded config
+                                response.data.preset_name || "",
+                                response.data.expanded_configuration,
                                 function () {
-                                    // After saving, continue with next batch
                                     if (!response.data.is_complete) {
                                         processBatch(
                                             productId,
@@ -336,164 +376,76 @@
             });
         }
 
-        // Simulate human interaction: CLICK each choice, then CLICK save
-        function expandAndSavePreset(
+        function savePresetConfiguration(
             productId,
-            combination,
             presetName,
+            configuration,
             callback,
         ) {
-            console.log("Clicking choices to configure preset:", combination);
-
-            // Click each choice in sequence (like a human would)
-            var currentIndex = 0;
-
-            function clickNextChoice() {
-                if (currentIndex >= combination.length) {
-                    // All choices clicked, now save the preset
-                    saveCurrentConfiguration(callback);
-                    return;
-                }
-
-                var choice = combination[currentIndex];
-                currentIndex++;
-
-                // Skip null/None choices
-                if (!choice.choice_id || choice.choice_name === "None") {
-                    clickNextChoice();
-                    return;
-                }
-
-                console.log(
-                    "Selecting:",
-                    choice.layer_name,
-                    "=",
-                    choice.choice_name,
-                );
-
-                // CRITICAL: Open the layer FIRST, then select the choice
-                var layer = PC.fe.layers.get(choice.layer_id);
-                if (!layer) {
-                    console.warn("  Layer not found:", choice.layer_id);
-                    clickNextChoice();
-                    return;
-                }
-
-                // Step 1: Make sure ALL other layers are closed
-                PC.fe.layers.each(function(l) {
-                    if (l.get('id') !== choice.layer_id) {
-                        l.set('active', false);
-                    }
-                });
-
-                // Step 2: Open THIS layer and wait for it to render
-                if (!layer.get('active')) {
-                    console.log("  Opening layer:", choice.layer_name);
-                    layer.set('active', true);
-                    
-                    // Wait for layer to open and render
-                    setTimeout(function() {
-                        selectChoiceInLayer();
-                    }, 250);
-                } else {
-                    selectChoiceInLayer();
-                }
-
-                function selectChoiceInLayer() {
-                    // Step 3: Now select the choice using Backbone API
-                    var choices = layer.get("choices");
-                    if (choices) {
-                        console.log("  Selecting choice via Backbone API...");
-                        choices.selectChoice(choice.choice_id);
-                        
-                        // Wait for visual rendering to complete
-                        setTimeout(clickNextChoice, 300);
-                    } else {
-                        console.warn("  No choices collection found");
-                        clickNextChoice();
-                    }
-                }
+            if (!Array.isArray(configuration)) {
+                console.warn("No configuration provided. Skipping save.");
+                callback();
+                return;
             }
 
-            function saveCurrentConfiguration(finalCallback) {
-                console.log(
-                    "All choices clicked, waiting for configuration to update...",
-                );
+            var generatedName =
+                presetName && presetName.length
+                    ? presetName
+                    : generatePresetName(configuration);
 
-                // Wait for Backbone models to propagate changes
-                // Listen for the price update hook which fires after all changes are processed
-                var configUpdateHandler = function () {
-                    wp.hooks.removeAction(
-                        "PC.fe.extra_price.after.update_price",
-                        "mkl/pc-bulk-generator",
-                        configUpdateHandler,
-                    );
+            configuration = enrichConfigurationOrdering(configuration);
 
-                    setTimeout(function () {
-                        console.log(
-                            "Configuration updated, now saving preset...",
-                        );
+            $.ajax({
+                url: MKL_PC_BulkGenerator.ajax_url,
+                type: "POST",
+                data: {
+                    action: "mkl_pc_save_expanded_preset",
+                    nonce: MKL_PC_BulkGenerator.nonce,
+                    product_id: productId,
+                    preset_name: generatedName,
+                    configuration: JSON.stringify(configuration),
+                },
+                success: function (response) {
+                    var presetId = response.success
+                        ? response.data && response.data.preset_id
+                        : null;
 
-                        // Get complete configuration from the now-rendered configurator
-                        var completeConfig = PC.fe.save_data.save();
-                        var configArray = JSON.parse(completeConfig);
+                    if (response.success && presetId) {
+                        console.log("✓ Preset saved:", generatedName, "#", presetId);
 
-                        // Generate unique name from all selected options
-                        var generatedName = generatePresetName(configArray);
-                        console.log("Generated preset name:", generatedName);
+                        var $presetInput = $('.mkl_pc_admin input[name="new_preset_title"]');
+                        if ($presetInput.length) {
+                            $presetInput.val(generatedName);
+                        }
 
-                        // Fill in the preset name field
-                        var $presetInput = $(
-                            '.mkl_pc_admin input[name="new_preset_title"]',
-                        );
-                        $presetInput.val(generatedName);
+                        $(document).trigger("mkl_pc_preset_saved", {
+                            post_id: presetId,
+                            title: generatedName,
+                            content: configuration,
+                        });
 
-                        // Create mock element for the save workflow
-                        var mockElement = {
-                            $el: $("<div>"),
-                            $input: $("<input>").val(generatedName),
-                        };
+                        setTimeout(callback, 200);
+                        return;
+                    }
 
-                        // Listen for save completion
-                        mockElement.$el.one(
-                            "saved",
-                            function (event, response) {
-                                if (response && response.saved) {
-                                    console.log(
-                                        "✓ Preset saved:",
-                                        generatedName,
-                                    );
+                    var errorMessage = response && response.data && response.data.message
+                        ? response.data.message
+                        : "Unknown error";
 
-                                    // Image generation happens async on server (reduced from 500ms to 200ms)
-                                    setTimeout(finalCallback, 200);
-                                } else {
-                                    console.warn("✗ Save failed:", response);
-                                    finalCallback();
-                                }
-                            },
-                        );
+                    if (errorMessage && errorMessage.toLowerCase().indexOf('duplicate') !== -1) {
+                        console.log('Preset already exists, skipping:', generatedName);
+                        setTimeout(callback, 200);
+                        return;
+                    }
 
-                        // Save the preset (like clicking the Save button)
-                        PC.fe.saveYourDesign.saveDesign(mockElement, "preset");
-                    }, 100);
-                };
-
-                // Add the hook listener
-                wp.hooks.addAction(
-                    "PC.fe.extra_price.after.update_price",
-                    "mkl/pc-bulk-generator",
-                    configUpdateHandler,
-                );
-
-                // Fallback timeout in case the hook never fires (reduced from 2000ms to 800ms)
-                setTimeout(function () {
-                    console.warn("Hook timeout, forcing save...");
-                    configUpdateHandler();
-                }, 800);
-            }
-
-            // Start clicking choices
-            clickNextChoice();
+                    console.warn('✗ Failed to create preset:', errorMessage, response);
+                    setTimeout(callback, 200);
+                },
+                error: function (xhr, status, error) {
+                    console.warn("✗ AJAX save failed:", error || status);
+                    setTimeout(callback, 200);
+                },
+            });
         }
 
         // Generate preset name from complete configuration (matches backend logic)
@@ -540,6 +492,225 @@
             }
 
             return name;
+        }
+
+        function applyAndSavePreset(
+            productId,
+            presetName,
+            expandedConfiguration,
+            callback,
+        ) {
+            if (
+                !expandedConfiguration ||
+                !Array.isArray(expandedConfiguration) ||
+                !expandedConfiguration.length
+            ) {
+                savePresetConfiguration(
+                    productId,
+                    presetName,
+                    expandedConfiguration,
+                    callback,
+                );
+                return;
+            }
+
+            expandedConfiguration = enrichConfigurationOrdering(
+                expandedConfiguration,
+            );
+
+            if (!PC || !PC.fe || typeof PC.fe.setConfig !== "function") {
+                console.warn(
+                    "Configurator not ready, saving configuration directly.",
+                );
+                savePresetConfiguration(
+                    productId,
+                    presetName,
+                    expandedConfiguration,
+                    callback,
+                );
+                return;
+            }
+
+            var userSelections = expandedConfiguration.filter(function (item) {
+                return (
+                    item &&
+                    item.is_choice &&
+                    item.layer_id &&
+                    item.choice_id &&
+                    (!item.layer_name ||
+                        item.layer_name.indexOf("Visual -") !== 0)
+                );
+            });
+
+            userSelections.sort(function (a, b) {
+                function resolveOrder(entry) {
+                    if (
+                        typeof entry.image_order !== "undefined" &&
+                        entry.image_order !== null &&
+                        entry.image_order !== ""
+                    ) {
+                        return parseInt(entry.image_order, 10);
+                    }
+                    if (
+                        typeof entry.order !== "undefined" &&
+                        entry.order !== null &&
+                        entry.order !== ""
+                    ) {
+                        return parseInt(entry.order, 10);
+                    }
+                    return parseInt(entry.layer_id, 10) || 0;
+                }
+
+                var orderA = resolveOrder(a);
+                var orderB = resolveOrder(b);
+
+                if (orderA === orderB) {
+                    if (a.layer_id === b.layer_id) {
+                        return parseInt(a.choice_id, 10) - parseInt(b.choice_id, 10);
+                    }
+                    return parseInt(a.layer_id, 10) - parseInt(b.layer_id, 10);
+                }
+                return orderA - orderB;
+            });
+
+            if (!userSelections.length) {
+                savePresetConfiguration(
+                    productId,
+                    presetName,
+                    expandedConfiguration,
+                    callback,
+                );
+                return;
+            }
+
+            var configItems = userSelections.map(function (item) {
+                return {
+                    layer_id: item.layer_id,
+                    choice_id: item.choice_id,
+                };
+            });
+
+            PC.fe.setConfig(configItems);
+
+            var queue = userSelections.slice();
+
+            function openLayer(layer, onReady, attempt) {
+                attempt = attempt || 0;
+
+                if (!layer) {
+                    onReady();
+                    return;
+                }
+
+                if (!layer.get("active")) {
+                    var layerSelector =
+                        '.layers-list-item[data-layer="' +
+                        layer.id +
+                        '"] > .layer-item';
+                    var $layerHeader = $(layerSelector);
+
+                    if ($layerHeader.length) {
+                        $layerHeader.trigger("click");
+                    }
+
+                    layer.set("active", true);
+                }
+
+                if (layer.get("active")) {
+                    setTimeout(onReady, 120);
+                    return;
+                }
+
+                if (attempt >= 10) {
+                    layer.set("active", true);
+                    setTimeout(onReady, 120);
+                    return;
+                }
+
+                setTimeout(function () {
+                    openLayer(layer, onReady, attempt + 1);
+                }, 80);
+            }
+
+            function waitForChoice(model, onReady, attempt) {
+                attempt = attempt || 0;
+
+                if (!model || typeof model.get !== "function") {
+                    setTimeout(onReady, 120);
+                    return;
+                }
+
+                if (model.get("active")) {
+                    setTimeout(onReady, 100);
+                    return;
+                }
+
+                if (attempt >= 20) {
+                    console.warn("Choice did not activate in time", model.id);
+                    setTimeout(onReady, 100);
+                    return;
+                }
+
+                setTimeout(function () {
+                    waitForChoice(model, onReady, attempt + 1);
+                }, 80);
+            }
+
+            function processNext() {
+                if (!queue.length) {
+                    setTimeout(function () {
+                        var finalConfig = JSON.parse(
+                            PC.fe.save_data.save(false),
+                        );
+                        finalConfig = enrichConfigurationOrdering(finalConfig);
+                        savePresetConfiguration(
+                            productId,
+                            presetName,
+                            finalConfig,
+                            callback,
+                        );
+                    }, 150);
+                    return;
+                }
+
+                var item = queue.shift();
+                var layer = PC.fe.layers.get(item.layer_id);
+
+                openLayer(layer, function () {
+                    var collection = PC.fe.getLayerContent(item.layer_id);
+                    var model =
+                        collection && typeof collection.get === "function"
+                            ? collection.get(item.choice_id)
+                            : null;
+
+                    var $button = $(
+                        "#choice_" + item.layer_id + "_" + item.choice_id,
+                    );
+                    var view =
+                        $button.length &&
+                        $button.closest(".choice").data("view")
+                            ? $button.closest(".choice").data("view")
+                            : null;
+
+                    if (view && typeof view.set_choice === "function") {
+                        view.set_choice({
+                            type: "mousedown",
+                            button: 0,
+                            currentTarget: $button[0],
+                            preventDefault: function () {},
+                        });
+                    } else if (
+                        collection &&
+                        typeof collection.selectChoice === "function"
+                    ) {
+                        collection.selectChoice(item.choice_id, true);
+                    }
+
+                    waitForChoice(model, processNext);
+                });
+            }
+
+            processNext();
         }
 
         function finishGeneration(totalGenerated, message) {
