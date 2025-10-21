@@ -195,7 +195,6 @@
 
         function requestPresetSnapshot(options) {
             options = options || {};
-            var includeTitles = options.includeTitles === true;
             var force = options.force === true;
             var productId = getProductId();
 
@@ -205,12 +204,11 @@
                 .promise();
         }
 
-        if (
-            !force &&
-            presetSnapshot &&
-            presetSnapshot.productId === productId &&
-            (!includeTitles || presetSnapshot.titlesIncluded)
-        ) {
+            if (
+                !force &&
+                presetSnapshot &&
+                presetSnapshot.productId === productId
+            ) {
             return $.Deferred().resolve(presetSnapshot).promise();
         }
 
@@ -228,7 +226,7 @@
                 action: "mkl_pc_get_preset_snapshot",
                 nonce: MKL_PC_BulkGenerator.nonce,
                 product_id: productId,
-                include_titles: includeTitles ? 1 : 0,
+                include_titles: 0,
             },
         })
             .done(function (response) {
@@ -245,35 +243,14 @@
                     totalPresets = 0;
                 }
 
-                var titleSet = presetSnapshot &&
-                        presetSnapshot.productId === productId &&
-                        presetSnapshot.titles instanceof Set
-                    ? new Set(presetSnapshot.titles)
-                    : new Set();
-
-                var titlesIncluded = includeTitles ? response.data.titles_included !== false : (presetSnapshot ? !!presetSnapshot.titlesIncluded : false);
-                if (includeTitles) {
-                    titleSet = new Set();
-                    var titlesArray = Array.isArray(response.data.titles)
-                        ? response.data.titles
-                        : [];
-                    titlesArray.forEach(function (title) {
-                        if (title) {
-                            titleSet.add(String(title).trim().toLowerCase());
-                        }
-                    });
-                }
-
                 presetSnapshot = {
                     productId: productId,
                     count: totalPresets,
-                    titles: titleSet,
-                    titlesIncluded: titlesIncluded,
+                    titles: new Set(),
+                    titlesIncluded: false,
                 };
 
-                if (includeTitles) {
-                    knownPresetTitles = titleSet;
-                }
+                knownPresetTitles = presetSnapshot.titles;
 
                 MKL_PC_BulkGenerator.existing_total = totalPresets;
                 updateExistingStat(totalPresets);
@@ -745,7 +722,7 @@
 
             var titlesPromise = snapshot.titlesIncluded
                 ? $.Deferred().resolve(snapshot).promise()
-                : requestPresetSnapshot({ force: true, includeTitles: true });
+                : requestPresetSnapshot({ force: true });
 
             titlesPromise
                 .done(function (finalSnapshot) {
