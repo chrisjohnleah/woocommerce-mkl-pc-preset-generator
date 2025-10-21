@@ -131,11 +131,18 @@ class MKL_PC_Preset_Generator_Admin_UI
                 display: grid;
                 gap: 15px;
                 margin-top: 15px;
+                grid-template-columns: 1fr;
             }
 
-            @media (min-width: 960px) {
+            @media (min-width: 1200px) {
                 .mkl-pc-bulk-panels {
-                    grid-template-columns: minmax(260px, 0.9fr) minmax(320px, 1.1fr);
+                    grid-template-columns: repeat(2, minmax(0, 1fr));
+                }
+            }
+
+            @media (min-width: 1600px) {
+                .mkl-pc-bulk-panels {
+                    grid-template-columns: repeat(3, minmax(0, 1fr));
                 }
             }
 
