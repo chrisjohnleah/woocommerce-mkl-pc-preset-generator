@@ -336,6 +336,7 @@ class MKL_PC_Preset_Generator_Admin_UI
                 background: #ffffff;
                 max-height: 160px;
                 overflow: hidden;
+                overflow-x: hidden;
             }
 
             .mkl-pc-bulk-live-log ul {
@@ -347,19 +348,34 @@ class MKL_PC_Preset_Generator_Admin_UI
                 display: flex;
                 flex-direction: column;
                 gap: 6px;
+                word-break: break-word;
             }
 
             .mkl-pc-bulk-live-log li {
                 font-size: 12px;
-                display: flex;
-                justify-content: space-between;
-                gap: 12px;
+                display: grid;
+                grid-template-columns: minmax(0, 1fr) auto;
+                align-items: start;
+                gap: 8px;
                 color: #334155;
+                word-break: break-word;
             }
 
             .mkl-pc-bulk-live-log li .timestamp {
                 color: #9ca3af;
                 font-variant-numeric: tabular-nums;
+                white-space: nowrap;
+                justify-self: end;
+            }
+
+            @media (max-width: 640px) {
+                .mkl-pc-bulk-live-log li {
+                    grid-template-columns: 1fr;
+                }
+
+                .mkl-pc-bulk-live-log li .timestamp {
+                    justify-self: start;
+                }
             }
 
             .log-entry--success {
