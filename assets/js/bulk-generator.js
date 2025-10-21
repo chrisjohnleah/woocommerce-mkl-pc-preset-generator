@@ -1,11 +1,12 @@
 (function ($, _) {
     "use strict";
 
-    console.log("MKL PC Bulk Generator v1.1.1 loaded");
+    console.log("MKL PC Bulk Generator v1.1.2 loaded");
     var runMetrics = null;
     var currentRun = null;
     var statsUpdateScheduled = false;
     var statsTicker = null;
+    var batchRetryTimer = null;
     var knownPresetTitles = new Set();
     var presetSnapshot = null;
     var snapshotPromise = null;
@@ -116,6 +117,7 @@
         var combinationQueue = [];
         var combinationProcessing = false;
         var pendingBatchMeta = null;
+        var lastRunPayload = null;
         var currentConfigState = new Map();
         var pendingTargetState = null;
 
@@ -480,8 +482,12 @@
                 : Date.now();
 
             var elapsedMs = Math.max(0, now - runMetrics.startedAt);
+            var savedForRate = Math.max(
+                runMetrics.totalPresets,
+                runMetrics.serverSavedTotal || 0,
+            );
             var perMinute = elapsedMs > 0
-                ? runMetrics.totalPresets / (elapsedMs / 60000)
+                ? savedForRate / (elapsedMs / 60000)
                 : 0;
 
             $elapsed.text(formatDuration(elapsedMs));
@@ -510,11 +516,156 @@
             }
         }
 
+        function initialiseRunMetrics(initialCount, chunkSize) {
+            var now = typeof performance !== "undefined" && performance.now
+                ? performance.now()
+                : Date.now();
+
+            runMetrics = window.MKL_PC_BulkMetrics = {
+                startedAt: now,
+                batches: [],
+                applyDurations: [],
+                saveDurations: [],
+                totalPresets: 0,
+                asyncThumbnails: 0,
+                skippedDuplicates: 0,
+                skippedServer: 0,
+                chunkSize: chunkSize,
+                attemptedTotal: 0,
+                serverAttemptedTotal: 0,
+                serverSavedTotal: 0,
+                pendingReservations: 0,
+                pendingOffsets: 0,
+                initialExisting: Number.isFinite(initialCount) ? initialCount : 0,
+                runId: null,
+            };
+        }
+
+        function clearBatchRetry() {
+            if (batchRetryTimer) {
+                clearTimeout(batchRetryTimer);
+                batchRetryTimer = null;
+            }
+        }
+
+        function scheduleBatchRetry(productId, delay) {
+            clearBatchRetry();
+            if (!currentRun || currentRun.finished || currentRun.cancelled) {
+                return;
+            }
+            batchRetryTimer = setTimeout(function () {
+                batchRetryTimer = null;
+                processBatch(productId);
+            }, Math.max(200, delay || 200));
+        }
+
+        function syncRunFromPayload(run) {
+            if (!run) {
+                return;
+            }
+
+            if (!currentRun) {
+                currentRun = {
+                    productId: getProductId(),
+                    cancelled: false,
+                    finished: false,
+                };
+            }
+
+            currentRun.runId = run.run_id || currentRun.runId || null;
+
+            if (!currentRun.chunkSize || currentRun.chunkSize < 1) {
+                currentRun.chunkSize = getChunkSize();
+            }
+
+            if (typeof run.chunk_size === "number" && run.chunk_size > 0) {
+                currentRun.chunkSize = run.chunk_size;
+            }
+
+            currentRun.nextOffset = typeof run.next_offset === "number"
+                ? run.next_offset
+                : currentRun.nextOffset || 0;
+            currentRun.attemptedTotal = typeof run.attempted_total === "number"
+                ? run.attempted_total
+                : currentRun.attemptedTotal || 0;
+            currentRun.savedTotal = typeof run.saved_total === "number"
+                ? run.saved_total
+                : currentRun.savedTotal || 0;
+            currentRun.pendingReservations = typeof run.reservations === "number"
+                ? run.reservations
+                : currentRun.pendingReservations || 0;
+            currentRun.pendingOffsets = typeof run.pending === "number"
+                ? run.pending
+                : currentRun.pendingOffsets || 0;
+            currentRun.isComplete = !!run.is_complete;
+            currentRun.isExhausted = !!run.is_exhausted;
+            currentRun.updatedAt = run.updated_at
+                ? run.updated_at * 1000
+                : Date.now();
+            currentRun.reservationTtl = run.reservation_ttl || currentRun.reservationTtl || 0;
+            lastRunPayload = run;
+
+            if (!runMetrics) {
+                initialiseRunMetrics(
+                    Number.isFinite(presetSnapshot && presetSnapshot.count)
+                        ? presetSnapshot.count
+                        : 0,
+                    currentRun.chunkSize,
+                );
+            }
+
+            runMetrics.chunkSize = currentRun.chunkSize;
+            runMetrics.attemptedTotal = currentRun.attemptedTotal;
+            runMetrics.serverAttemptedTotal = currentRun.attemptedTotal;
+            runMetrics.serverSavedTotal = currentRun.savedTotal;
+            runMetrics.pendingReservations = currentRun.pendingReservations;
+            runMetrics.pendingOffsets = currentRun.pendingOffsets;
+            runMetrics.runId = currentRun.runId;
+        }
+
+        function requestBackendRun(productId, options) {
+            options = options || {};
+            var payload = {
+                action: "mkl_pc_begin_generation_run",
+                nonce: MKL_PC_BulkGenerator.nonce,
+                product_id: productId,
+                chunk_size: options.chunkSize || chunkSizeConfigured,
+            };
+
+            if (options.forceNew) {
+                payload.force_new = 1;
+            }
+
+            return $.ajax({
+                url: MKL_PC_BulkGenerator.ajax_url,
+                type: "POST",
+                data: payload,
+            });
+        }
+
+        function cancelBackendRun(productId, runId) {
+            if (!productId || !runId) {
+                return $.Deferred().reject().promise();
+            }
+
+            return $.ajax({
+                url: MKL_PC_BulkGenerator.ajax_url,
+                type: "POST",
+                data: {
+                    action: "mkl_pc_cancel_generation_run",
+                    nonce: MKL_PC_BulkGenerator.nonce,
+                    product_id: productId,
+                    run_id: runId,
+                },
+            });
+        }
+
         function cancelRun() {
             if (!currentRun || currentRun.cancelled) {
                 return;
             }
             currentRun.cancelled = true;
+            clearBatchRetry();
             pendingBatchMeta = null;
             combinationQueue = [];
             combinationProcessing = false;
@@ -526,11 +677,14 @@
                 "Cancellation requested. Finishing current preset...",
                 "warn",
                 { force: true },
-            );
+                );
             if ($stopBtn.length) {
                 $stopBtn
                     .prop("disabled", true)
                     .text(MKL_PC_BulkGenerator.strings.cancelling || "Cancelling...");
+            }
+            if (currentRun.runId) {
+                cancelBackendRun(currentRun.productId, currentRun.runId).always(function () {});
             }
             scheduleStatsUpdate();
         }
@@ -637,68 +791,98 @@
             updateExistingStat(presetSnapshot.count);
             setRunningState(true);
 
-            var generatingLabel = MKL_PC_BulkGenerator.strings.generating ||
-                "Generating presets...";
-            setStatus(generatingLabel, "info");
+            var preparingLabel = MKL_PC_BulkGenerator.strings.preparing ||
+                "Preparing preset run...";
+            setStatus(preparingLabel, "info");
             appendLog(
-                "Generation started for product #" + productId + ".",
+                "Preparing backend run context...",
                 "info",
                 { force: true },
             );
 
-            var now = typeof performance !== "undefined" && performance.now
-                ? performance.now()
-                : Date.now();
+            requestBackendRun(productId, { chunkSize: chunkSizeConfigured })
+                .done(function (response) {
+                    var run = response && response.success && response.data
+                        ? response.data.run
+                        : null;
 
-            var chunkSize = chunkSizeConfigured;
+                    if (!run || !run.run_id) {
+                        var missingMessage = MKL_PC_BulkGenerator.strings.error ||
+                            "Failed to prepare run.";
+                        setStatus(missingMessage, "error");
+                        appendLog(missingMessage, "error", { force: true });
+                        setRunningState(false);
+                        return;
+                    }
 
-            runMetrics = window.MKL_PC_BulkMetrics = {
-                startedAt: now,
-                batches: [],
-                applyDurations: [],
-                saveDurations: [],
-                totalPresets: 0,
-                asyncThumbnails: 0,
-                skippedDuplicates: 0,
-                skippedServer: 0,
-                chunkSize: chunkSize,
-                attemptedTotal: 0,
-                initialExisting: Number.isFinite(presetSnapshot.count)
-                    ? presetSnapshot.count
-                    : 0,
-            };
+                    var chunkSize = typeof run.chunk_size === "number" && run.chunk_size > 0
+                        ? run.chunk_size
+                        : chunkSizeConfigured;
 
-            currentRun = {
-                productId: productId,
-                cancelled: false,
-                finished: false,
-                chunkSize: chunkSize,
-                attemptedTotal: 0,
-                initialExisting: runMetrics.initialExisting,
-            };
+                    initialiseRunMetrics(presetSnapshot.count, chunkSize);
 
-            appendLog(
-                "Batch size " + formatNumber(chunkSize) + " combinations per request.",
-                "info",
-                { force: true },
-            );
+                    currentRun = {
+                        productId: productId,
+                        runId: run.run_id,
+                        cancelled: false,
+                        finished: false,
+                        chunkSize: chunkSize,
+                        attemptedTotal: typeof run.attempted_total === "number"
+                            ? run.attempted_total
+                            : 0,
+                        initialExisting: runMetrics.initialExisting,
+                        savedTotal: typeof run.saved_total === "number"
+                            ? run.saved_total
+                            : 0,
+                    };
 
-            if (statsTicker) {
-                clearInterval(statsTicker);
-            }
-            statsTicker = setInterval(function () {
-                if (runMetrics && (!currentRun || !currentRun.finished)) {
-                    updateLiveStats();
-                }
-            }, 1000);
+                    syncRunFromPayload(run);
 
-            $progress.addClass("active");
-            $progressBar.css("width", "0%").text("0%");
-            $progressStatus.text(generatingLabel);
-            $container.find('[data-stat="generated"]').text("0");
+                    appendLog(
+                        "Run " + run.run_id + " initialised. Batch size " +
+                            formatNumber(currentRun.chunkSize) + ".",
+                        "info",
+                        { force: true },
+                    );
 
-            scheduleStatsUpdate();
-            processBatch(productId, 0);
+                    var generatingLabel = MKL_PC_BulkGenerator.strings.generating ||
+                        "Generating presets...";
+                    setStatus(generatingLabel, "info");
+                    appendLog(
+                        "Generation started for product #" + productId +
+                            " (run " + run.run_id + ").",
+                        "info",
+                        { force: true },
+                    );
+
+                    if (statsTicker) {
+                        clearInterval(statsTicker);
+                    }
+                    statsTicker = setInterval(function () {
+                        if (runMetrics && (!currentRun || !currentRun.finished)) {
+                            updateLiveStats();
+                        }
+                    }, 1000);
+
+                    $progress.addClass("active");
+                    $progressBar.css("width", "0%").text("0%");
+                    $progressStatus.text(generatingLabel);
+                    $container.find('[data-stat="generated"]').text("0");
+
+                    scheduleStatsUpdate();
+                    clearBatchRetry();
+                    processBatch(productId);
+                })
+                .fail(function (xhr) {
+                    var errorMessage = MKL_PC_BulkGenerator.strings.error ||
+                        "Failed to prepare run.";
+                    if (xhr && xhr.responseJSON && xhr.responseJSON.data && xhr.responseJSON.data.message) {
+                        errorMessage = xhr.responseJSON.data.message;
+                    }
+                    setStatus(errorMessage, "error");
+                    appendLog("Failed to prepare run: " + errorMessage, "error", { force: true });
+                    setRunningState(false);
+                });
         }
 
         if ($stopBtn.length) {
@@ -877,12 +1061,18 @@
         });
 
         // Process batch function
-        function processBatch(productId, offset) {
-            var savedCount = getSavedCount();
+        function processBatch(productId) {
+            if (!productId) {
+                return;
+            }
+
+            if (!currentRun || currentRun.finished) {
+                return;
+            }
 
             if (isRunCancelled()) {
                 finishGeneration(
-                    savedCount,
+                    getSavedCount(),
                     MKL_PC_BulkGenerator.strings.cancelled ||
                         "Generation cancelled by user.",
                     { cancelled: true },
@@ -890,24 +1080,32 @@
                 return;
             }
 
-            var batchSize = currentRun && currentRun.chunkSize
-                ? currentRun.chunkSize
-                : getChunkSize();
-
             setStatus(
                 MKL_PC_BulkGenerator.strings.searching ||
                     "Searching for next valid combination...",
                 "info",
             );
-            processBatchAfterPreload(productId, offset, batchSize);
+            processBatchAfterPreload(productId);
         }
 
         // Process batch via AJAX
-        function processBatchAfterPreload(productId, offset, batchSize) {
-            batchSize = batchSize || (currentRun && currentRun.chunkSize
-                ? currentRun.chunkSize
-                : getChunkSize());
-            var savedBeforeBatch = getSavedCount();
+        function processBatchAfterPreload(productId) {
+            if (!currentRun || !currentRun.runId) {
+                setStatus(
+                    MKL_PC_BulkGenerator.strings.error ||
+                        "Run context missing. Please restart generation.",
+                    "error",
+                );
+                finishGeneration(
+                    getSavedCount(),
+                    MKL_PC_BulkGenerator.strings.error ||
+                        "Run context missing.",
+                    { error: true },
+                );
+                return;
+            }
+
+            var batchSize = currentRun.chunkSize || getChunkSize();
             var attemptsBeforeBatch = runMetrics && Number.isFinite(runMetrics.attemptedTotal)
                 ? runMetrics.attemptedTotal
                 : 0;
@@ -915,21 +1113,6 @@
                 typeof performance !== "undefined" && performance.now
                     ? performance.now()
                     : Date.now();
-            if (isRunCancelled()) {
-                finishGeneration(
-                    savedBeforeBatch,
-                    MKL_PC_BulkGenerator.strings.cancelled ||
-                        "Generation cancelled by user.",
-                    { cancelled: true },
-                );
-                return;
-            }
-
-            setStatus(
-                MKL_PC_BulkGenerator.strings.searching ||
-                    "Searching for valid combinations...",
-                "info",
-            );
 
             $.ajax({
                 url: MKL_PC_BulkGenerator.ajax_url,
@@ -938,192 +1121,178 @@
                     action: "mkl_pc_generate_presets_batch",
                     nonce: MKL_PC_BulkGenerator.nonce,
                     product_id: productId,
-                    offset: offset,
+                    run_id: currentRun.runId,
                     batch_size: batchSize,
-                    batch_index: Math.floor(offset / Math.max(1, batchSize)),
-                    total_generated: attemptsBeforeBatch,
-                    saved_total: savedBeforeBatch,
                 },
                 success: function (response) {
-                    if (response && response.success) {
-                        var data = response.data || {};
-                        var attemptedFromServer = Number(
-                            typeof data.total_generated === "number"
-                                ? data.total_generated
-                                : (typeof data.attempted_total === "number"
-                                    ? data.attempted_total
-                                    : attemptsBeforeBatch),
-                        );
-                        if (!Number.isFinite(attemptedFromServer)) {
-                            attemptedFromServer = attemptsBeforeBatch;
-                        }
-
-                        if (runMetrics) {
-                            runMetrics.attemptedTotal = attemptedFromServer;
-                            runMetrics.skippedServer =
-                                (runMetrics.skippedServer || 0) + (data.skipped || 0);
-                        }
-                        if (currentRun) {
-                            currentRun.attemptedTotal = attemptedFromServer;
-                        }
-
-                        var savedTotal = runMetrics ? runMetrics.totalPresets : 0;
-                        var serverSkippedTotal = runMetrics
-                            ? runMetrics.skippedServer || 0
-                            : (data.skipped || 0);
-                        var duplicateSkipped = runMetrics
-                            ? runMetrics.skippedDuplicates || 0
-                            : 0;
-                        var totalSkipped = serverSkippedTotal + duplicateSkipped;
-
-                        $progressBar.css("width", "0%").text("");
-                        var progressMessage =
-                            "Processed " + formatNumber(attemptedFromServer) +
-                            " combinations • Saved " + formatNumber(savedTotal);
-                        if (totalSkipped > 0) {
-                            progressMessage +=
-                                " • Skipped " + formatNumber(totalSkipped);
-                        }
-                        if (runMetrics && runMetrics.startedAt) {
-                            var nowRate =
-                                typeof performance !== "undefined" && performance.now
-                                    ? performance.now()
-                                    : Date.now();
-                            var elapsedForRate = Math.max(0, nowRate - runMetrics.startedAt);
-                            if (elapsedForRate > 0) {
-                                var rateValue = savedTotal / (elapsedForRate / 60000);
-                                if (rateValue > 0) {
-                                    progressMessage +=
-                                        " • " + rateValue.toFixed(1) + " presets/min";
-                                }
-                            }
-                        }
-
-                        var combosRaw = [];
-                        if (Array.isArray(data.valid_combinations)) {
-                            combosRaw = data.valid_combinations;
-                        } else if (Array.isArray(data.valid_combination)) {
-                            combosRaw = data.valid_combination;
-                        } else if (data.expanded_configuration) {
-                            combosRaw = [{
-                                preset_name: data.preset_name || "",
-                                expanded_configuration: data.expanded_configuration,
-                            }];
-                        }
-
-                        var queuedCount = 0;
-                        combosRaw.forEach(function (combo) {
-                            combinationQueue.push({
-                                productId: productId,
-                                name: combo && combo.preset_name ? combo.preset_name : "",
-                                configuration: combo && Array.isArray(combo.expanded_configuration)
-                                    ? combo.expanded_configuration
-                                    : [],
-                            });
-                            queuedCount++;
-                        });
-
-                        if (queuedCount > 0) {
-                            progressMessage +=
-                                " • Queued " + formatNumber(queuedCount) +
-                                (queuedCount === 1 ? " preset" : " presets");
-                        }
-
-                        $progressStatus.text(progressMessage);
-                        setStatus(
-                            MKL_PC_BulkGenerator.strings.generating ||
-                                "Generating presets...",
-                            "info",
-                        );
-
-                        $container.find('[data-stat="generated"]').text(
-                            formatNumber(savedTotal),
-                        );
-                        updateExistingStat(
-                            (runMetrics ? runMetrics.initialExisting : 0) + savedTotal,
-                        );
-
-                        pendingBatchMeta = {
-                            productId: productId,
-                            offset: typeof data.offset === "number" ? data.offset : offset,
-                            isComplete: !!data.is_complete,
-                            message: data.message || "",
-                        };
-
-                        if (!combinationQueue.length) {
-                            if (isRunCancelled()) {
-                                finishGeneration(
-                                    getSavedCount(),
-                                    MKL_PC_BulkGenerator.strings.cancelled ||
-                                        "Generation cancelled by user.",
-                                    { cancelled: true },
-                                );
-                                return;
-                            }
-
-                            var meta = pendingBatchMeta;
-                            pendingBatchMeta = null;
-
-                            if (meta.isComplete) {
-                                finishGeneration(
-                                    getSavedCount(),
-                                    meta.message,
-                                );
-                            } else {
-                                processBatch(
-                                    productId,
-                                    meta.offset,
-                                );
-                            }
-                            return;
-                        }
-
-                        processCombinationQueue();
-                    } else {
-                        var failureMessage = response && response.data && response.data.message
+                    if (!response || !response.success) {
+                        var failMessage = response && response.data && response.data.message
                             ? response.data.message
-                            : MKL_PC_BulkGenerator.strings.error;
+                            : (MKL_PC_BulkGenerator.strings.error || "Unexpected error.");
                         setStatus(
-                            (MKL_PC_BulkGenerator.strings.error || "Error") +
-                                ": " +
-                                failureMessage,
+                            (MKL_PC_BulkGenerator.strings.error || "Error") + ": " + failMessage,
                             "error",
                         );
                         appendLog(
-                            "Generation stopped: " + failureMessage,
+                            "Generation stopped: " + failMessage,
                             "error",
                             { force: true },
                         );
                         finishGeneration(
                             getSavedCount(),
-                            failureMessage,
+                            failMessage,
                             { error: true },
                         );
-                        alert(
-                            MKL_PC_BulkGenerator.strings.error + ": " +
-                                failureMessage,
-                        );
+                        return;
                     }
-                },
-                error: function (xhr, status, error) {
-                    var errorText = MKL_PC_BulkGenerator.strings.error + ": " +
-                        error;
-                    setStatus(errorText, "error");
-                    appendLog(errorText, "error", { force: true });
-                    alert(errorText);
-                    finishGeneration(
-                        getSavedCount(),
-                        error,
-                        { error: true },
+
+                    var data = response.data || {};
+                    if (data.run) {
+                        syncRunFromPayload(data.run);
+                    }
+
+                    var attemptedFromServer = data.run && typeof data.run.attempted_total === "number"
+                        ? data.run.attempted_total
+                        : attemptsBeforeBatch;
+
+                    if (runMetrics) {
+                        runMetrics.attemptedTotal = attemptedFromServer;
+                        runMetrics.skippedServer =
+                            (runMetrics.skippedServer || 0) + (data.skipped || 0);
+                    }
+                    if (currentRun) {
+                        currentRun.attemptedTotal = attemptedFromServer;
+                    }
+
+                    var savedTotalClient = runMetrics ? runMetrics.totalPresets : 0;
+                    var savedTotalServer = runMetrics ? runMetrics.serverSavedTotal || 0 : 0;
+                    var savedTotalForStats = Math.max(savedTotalClient, savedTotalServer);
+
+                    var serverSkippedTotal = runMetrics
+                        ? runMetrics.skippedServer || 0
+                        : (data.skipped || 0);
+                    var duplicateSkipped = runMetrics
+                        ? runMetrics.skippedDuplicates || 0
+                        : 0;
+                    var totalSkipped = serverSkippedTotal + duplicateSkipped;
+
+                    var combosRaw = [];
+                    if (Array.isArray(data.valid_combinations)) {
+                        combosRaw = data.valid_combinations;
+                    } else if (Array.isArray(data.valid_combination)) {
+                        combosRaw = data.valid_combination;
+                    } else if (data.expanded_configuration) {
+                        combosRaw = [{
+                            preset_name: data.preset_name || "",
+                            expanded_configuration: data.expanded_configuration,
+                        }];
+                    }
+
+                    var queuedCount = 0;
+                    combosRaw.forEach(function (combo) {
+                        combinationQueue.push({
+                            productId: productId,
+                            name: combo && combo.preset_name ? combo.preset_name : "",
+                            configuration: combo && Array.isArray(combo.expanded_configuration)
+                                ? combo.expanded_configuration
+                                : [],
+                        });
+                        queuedCount++;
+                    });
+
+                    var progressMessage =
+                        "Processed " + formatNumber(attemptedFromServer) +
+                        " combinations • Saved " + formatNumber(savedTotalForStats);
+                    if (totalSkipped > 0) {
+                        progressMessage +=
+                            " • Skipped " + formatNumber(totalSkipped);
+                    }
+                    if (queuedCount > 0) {
+                        progressMessage +=
+                            " • Queued " + formatNumber(queuedCount) +
+                            (queuedCount === 1 ? " preset" : " presets");
+                    }
+                    if (typeof data.claimed_offset === "number") {
+                        progressMessage +=
+                            " • Offset " + formatNumber(data.claimed_offset);
+                    }
+
+                    $progressStatus.text(progressMessage);
+                    setStatus(
+                        MKL_PC_BulkGenerator.strings.generating ||
+                            "Generating presets...",
+                        "info",
                     );
+
+                    $container.find('[data-stat="generated"]').text(
+                        formatNumber(savedTotalForStats),
+                    );
+                    updateExistingStat(
+                        (runMetrics ? runMetrics.initialExisting : 0) + savedTotalForStats,
+                    );
+
+                    pendingBatchMeta = data;
+
+                    clearBatchRetry();
+
+                    if (combinationQueue.length) {
+                        processCombinationQueue();
+                        return;
+                    }
+
+                    if (isRunCancelled()) {
+                        finishGeneration(
+                            getSavedCount(),
+                            MKL_PC_BulkGenerator.strings.cancelled ||
+                                "Generation cancelled by user.",
+                            { cancelled: true },
+                        );
+                        return;
+                    }
+
+                    var isComplete = !!data.is_complete || (data.run && data.run.is_complete);
+                    if (isComplete) {
+                        finishGeneration(
+                            getSavedCount(),
+                            data.message ||
+                                MKL_PC_BulkGenerator.strings.complete ||
+                                "Generation complete.",
+                        );
+                        return;
+                    }
+
+                    scheduleBatchRetry(productId, 250);
+                },
+                error: function (xhr) {
+                    var message = MKL_PC_BulkGenerator.strings.error || "An error occurred";
+                    var errorCode = null;
+                    if (xhr && xhr.responseJSON && xhr.responseJSON.data) {
+                        if (xhr.responseJSON.data.message) {
+                            message = xhr.responseJSON.data.message;
+                        }
+                        if (xhr.responseJSON.data.code) {
+                            errorCode = xhr.responseJSON.data.code;
+                        }
+                    }
+                    setStatus(message, "error");
+                    appendLog(message, "error", { force: true });
+                    if (errorCode === "run_mismatch" || errorCode === "run_missing") {
+                        finishGeneration(
+                            getSavedCount(),
+                            message,
+                            { error: true },
+                        );
+                    } else {
+                        scheduleBatchRetry(productId, 400);
+                    }
                 },
                 complete: function () {
                     if (runMetrics) {
-                        var now =
+                        var nowComplete =
                             typeof performance !== "undefined" && performance.now
                                 ? performance.now()
                                 : Date.now();
-                        runMetrics.batches.push(now - batchStartedAt);
+                        runMetrics.batches.push(nowComplete - batchStartedAt);
                         scheduleStatsUpdate();
                     }
                 },
@@ -1150,16 +1319,24 @@
                         return;
                     }
 
-                    if (meta.isComplete) {
+                    var runPayload = meta.run || null;
+                    if (runPayload) {
+                        syncRunFromPayload(runPayload);
+                    }
+
+                    var metaMessage = meta.message || "";
+                    var metaProductId = meta.productId || (currentRun ? currentRun.productId : null);
+                    var metaComplete = !!meta.is_complete || (runPayload && runPayload.is_complete);
+
+                    if (metaComplete) {
                         finishGeneration(
                             getSavedCount(),
-                            meta.message,
+                            metaMessage ||
+                                MKL_PC_BulkGenerator.strings.complete ||
+                                "Generation complete.",
                         );
                     } else {
-                        processBatch(
-                            meta.productId || (currentRun ? currentRun.productId : null),
-                            meta.offset,
-                        );
+                        scheduleBatchRetry(metaProductId || getProductId(), 250);
                     }
                 }
                 return;
@@ -1304,7 +1481,15 @@
                         var updatedExistingTotal;
                         if (runMetrics) {
                             runMetrics.totalPresets += 1;
-                            updatedExistingTotal = runMetrics.initialExisting + runMetrics.totalPresets;
+                            runMetrics.serverSavedTotal = Math.max(
+                                runMetrics.serverSavedTotal || 0,
+                                runMetrics.totalPresets,
+                            );
+                            var savedForTotals = Math.max(
+                                runMetrics.totalPresets,
+                                runMetrics.serverSavedTotal || 0,
+                            );
+                            updatedExistingTotal = runMetrics.initialExisting + savedForTotals;
                             scheduleStatsUpdate();
                         } else {
                             updatedExistingTotal = (MKL_PC_BulkGenerator.existing_total || 0) + 1;
@@ -1789,6 +1974,7 @@
             combinationProcessing = false;
             pendingBatchMeta = null;
             pendingTargetState = null;
+            clearBatchRetry();
 
             var $container = $(".mkl-pc-bulk-generator");
             var $progress = $container.find(".mkl-pc-bulk-generator-progress");
@@ -1797,10 +1983,18 @@
             var productIdForRefresh = currentRun ? currentRun.productId : null;
             var cancelled = !!options.cancelled;
             var errored = !!options.error;
-            var savedTotal = runMetrics ? runMetrics.totalPresets : totalGenerated;
-            var attemptedTotal = runMetrics && typeof runMetrics.attemptedTotal === "number"
+            var savedTotalClient = runMetrics ? runMetrics.totalPresets : totalGenerated;
+            var savedTotalServer = runMetrics && typeof runMetrics.serverSavedTotal === "number"
+                ? runMetrics.serverSavedTotal
+                : savedTotalClient;
+            var savedTotal = Math.max(savedTotalClient, savedTotalServer);
+            var attemptedTotalClient = runMetrics && typeof runMetrics.attemptedTotal === "number"
                 ? runMetrics.attemptedTotal
                 : totalGenerated;
+            var attemptedTotalServer = runMetrics && typeof runMetrics.serverAttemptedTotal === "number"
+                ? runMetrics.serverAttemptedTotal
+                : attemptedTotalClient;
+            var attemptedTotal = Math.max(attemptedTotalClient, attemptedTotalServer);
 
             var defaultMessage = cancelled
                 ? (MKL_PC_BulkGenerator.strings.cancelled ||
@@ -1880,6 +2074,19 @@
             }
 
             if (runMetrics) {
+                runMetrics.serverSavedTotal = Math.max(
+                    runMetrics.serverSavedTotal || 0,
+                    savedTotal,
+                );
+                runMetrics.serverAttemptedTotal = Math.max(
+                    runMetrics.serverAttemptedTotal || 0,
+                    attemptedTotal,
+                );
+                runMetrics.attemptedTotal = Math.max(
+                    runMetrics.attemptedTotal || 0,
+                    attemptedTotal,
+                );
+
                 var now =
                     typeof performance !== "undefined" && performance.now
                         ? performance.now()
@@ -1925,6 +2132,9 @@
             }
 
             scheduleStatsUpdate();
+            if (runMetrics) {
+                runMetrics.runId = null;
+            }
             currentRun = null;
         }
     }
