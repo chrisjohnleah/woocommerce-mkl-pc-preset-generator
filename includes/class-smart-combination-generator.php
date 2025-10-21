@@ -237,6 +237,55 @@ class MKL_PC_Smart_Combination_Generator
     }
 
     /**
+     * Generate a random combination (may be invalid) by sampling each layer's choices.
+     *
+     * @return array{combination: array<int, array<string,mixed>>, valid: bool}|
+     *         null When no layers are available.
+     */
+    public function sample_random_combination()
+    {
+        if (empty($this->layers)) {
+            return null;
+        }
+
+        $selection = [];
+
+        foreach ($this->layers as $layer) {
+            if (empty($layer['choices'])) {
+                continue;
+            }
+
+            $choices = $layer['choices'];
+
+            if (!empty($layer['is_core']) || !empty($layer['is_required'])) {
+                $non_null = array_values(array_filter($choices, function ($choice) {
+                    return null !== $choice['id'];
+                }));
+
+                if (!empty($non_null)) {
+                    $choices = $non_null;
+                }
+            }
+
+            $choice = $choices[array_rand($choices)];
+
+            $selection[] = [
+                'layer_id' => $layer['id'],
+                'layer_name' => $layer['name'],
+                'choice_id' => $choice['id'],
+                'choice_name' => $choice['name'],
+            ];
+        }
+
+        $is_valid = $this->validator->validate_combination($selection);
+
+        return [
+            'combination' => $selection,
+            'valid' => $is_valid,
+        ];
+    }
+
+    /**
      * Depth-first traversal with backtracking. Stops early when we collected enough results.
      *
      * @param int        $layer_index

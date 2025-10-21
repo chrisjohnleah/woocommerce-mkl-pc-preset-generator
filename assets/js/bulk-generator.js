@@ -1,12 +1,29 @@
 (function ($, _) {
     "use strict";
 
-    console.log("MKL PC Bulk Generator v1.0.6 loaded");
+    console.log("MKL PC Bulk Generator v1.1.1 loaded");
     var runMetrics = null;
     var currentRun = null;
     var statsUpdateScheduled = false;
     var statsTicker = null;
     var knownPresetTitles = new Set();
+    var presetSnapshot = null;
+    var snapshotPromise = null;
+
+    function parseDisplayNumber(value) {
+        if (typeof value === "number" && isFinite(value)) {
+            return value;
+        }
+        var cleaned = String(value || "")
+            .replace(/[^\d.-]/g, "")
+            .replace(/^-$/, "");
+        var parsed = parseInt(cleaned, 10);
+        return Number.isFinite(parsed) ? parsed : 0;
+    }
+
+    function getSavedCount() {
+        return runMetrics ? runMetrics.totalPresets : 0;
+    }
 
     // Wait for PC to be ready
     wp.hooks.addAction("PC.fe.start", "MKL/PC/BulkGenerator", function (view) {
@@ -60,7 +77,6 @@
 
     function initHandlers() {
         var $container = $(".mkl-pc-bulk-generator");
-        var $estimateBtn = $container.find(".mkl-pc-estimate-btn");
         var $generateBtn = $container.find(".mkl-pc-generate-btn");
         var $deleteBtn = $container.find(".mkl-pc-delete-all-btn");
         var $progress = $container.find(".mkl-pc-bulk-generator-progress");
@@ -68,6 +84,8 @@
         var $progressStatus = $progress.find(".progress-status");
         var $stopBtn = $container.find(".mkl-pc-stop-btn");
         var $status = $container.find('[data-live="status"]');
+        var $estimateBtn = $container.find('.mkl-pc-estimate-btn');
+        var $estimateOutput = $container.find('[data-live="estimate-output"]');
         var $elapsed = $container.find('[data-live="elapsed"]');
         var $rate = $container.find('[data-live="rate"]');
         var $avgApply = $container.find('[data-live="avg-apply"]');
@@ -76,28 +94,54 @@
         var $skipped = $container.find('[data-live="skipped-duplicates"]');
         var $logList = $container.find('[data-live-log]');
         var defaultGenerateLabel = $generateBtn.text();
-        var defaultEstimateLabel = $estimateBtn.text();
         var defaultStopLabel = $stopBtn.length ? $stopBtn.text() : "Stop";
         var defaultStatusText = MKL_PC_BulkGenerator.strings.ready ||
             "Ready to start.";
-        var emptyLogMessage = $.trim($logList.text()) ||
+        var defaultEstimateLabel = $estimateBtn.length
+            ? $estimateBtn.text()
+            : (MKL_PC_BulkGenerator.strings.estimate_action || "Estimate Valid Presets");
+        var chunkSizeConfigured = Number(MKL_PC_BulkGenerator.batch_size) || 50;
+        var emptyLogMessage = ($logList.text() || "").trim() ||
             MKL_PC_BulkGenerator.strings.log_empty ||
             "Activity will appear here once generation starts.";
         var logEntries = [];
         var canGenerateAfterRun = !$generateBtn.prop("disabled");
-        var canEstimateAfterRun = !$estimateBtn.prop("disabled");
         var canDeleteAfterRun = !$deleteBtn.prop("disabled");
         var raf = window.requestAnimationFrame
             ? window.requestAnimationFrame.bind(window)
             : function (cb) {
                 return setTimeout(cb, 60);
             };
+        var estimatingInProgress = false;
+        var combinationQueue = [];
+        var combinationProcessing = false;
+        var pendingBatchMeta = null;
+        var currentConfigState = new Map();
+        var pendingTargetState = null;
 
-        collectExistingPresetTitles();
+        var initialExisting = Number(MKL_PC_BulkGenerator.existing_total);
+        if (Number.isFinite(initialExisting) && initialExisting >= 0) {
+            presetSnapshot = {
+                count: initialExisting,
+                titles: new Set(),
+                productId: getProductId(),
+                titlesIncluded: false,
+            };
+            knownPresetTitles = presetSnapshot.titles;
+            updateExistingStat(initialExisting);
+        } else {
+            updateExistingStat(null);
+        }
         resetLiveView();
         renderLog();
         updateLiveStats();
         $stopBtn.prop("disabled", true).text(defaultStopLabel);
+        $generateBtn.prop("disabled", false);
+        canGenerateAfterRun = true;
+
+        function getChunkSize() {
+            return chunkSizeConfigured;
+        }
 
         function average(values) {
             if (!values || !values.length) {
@@ -126,27 +170,127 @@
                 formatNumber(Math.round(Math.max(0, upper)));
         }
 
-        function collectExistingPresetTitles() {
-            var titles = new Set();
-            try {
-                if (
-                    window.PC_Presets_Configurations &&
-                    typeof window.PC_Presets_Configurations.each === "function"
-                ) {
-                    window.PC_Presets_Configurations.each(function (model) {
-                        var title = model && typeof model.get === "function"
-                            ? model.get("title")
-                            : null;
-                        if (title) {
-                            titles.add(String(title).trim().toLowerCase());
-                        }
-                    });
-                    knownPresetTitles = titles;
-                }
-            } catch (err) {
-                console.warn("Bulk generator: failed to collect preset titles", err);
+        function getProductId() {
+            var productId = Number($generateBtn.data("product-id"));
+            return Number.isFinite(productId) && productId > 0 ? productId : null;
+        }
+
+        function updateExistingStat(count) {
+            var formatted = "-";
+            if (Number.isFinite(count) && count >= 0) {
+                formatted = formatNumber(count);
+                MKL_PC_BulkGenerator.existing_total = count;
+            }
+            if ($container && $container.length) {
+                $container.find('[data-stat="existing"]').text(formatted);
+            }
+            if (presetSnapshot) {
+                presetSnapshot.count = Number.isFinite(count) && count >= 0
+                    ? count
+                    : presetSnapshot.count;
             }
         }
+
+        function requestPresetSnapshot(options) {
+            options = options || {};
+            var includeTitles = options.includeTitles === true;
+            var force = options.force === true;
+            var productId = getProductId();
+
+        if (!productId) {
+            return $.Deferred()
+                .reject("Missing product ID for preset snapshot.")
+                .promise();
+        }
+
+        if (
+            !force &&
+            presetSnapshot &&
+            presetSnapshot.productId === productId &&
+            (!includeTitles || presetSnapshot.titlesIncluded)
+        ) {
+            return $.Deferred().resolve(presetSnapshot).promise();
+        }
+
+        if (snapshotPromise) {
+            return snapshotPromise;
+        }
+
+        var deferred = $.Deferred();
+        snapshotPromise = deferred.promise();
+
+        $.ajax({
+            url: MKL_PC_BulkGenerator.ajax_url,
+            type: "POST",
+            data: {
+                action: "mkl_pc_get_preset_snapshot",
+                nonce: MKL_PC_BulkGenerator.nonce,
+                product_id: productId,
+                include_titles: includeTitles ? 1 : 0,
+            },
+        })
+            .done(function (response) {
+                if (!response || !response.success || !response.data) {
+                    var message = response && response.data && response.data.message
+                        ? response.data.message
+                        : "Unknown server response.";
+                    deferred.reject(message);
+                    return;
+                }
+
+                var totalPresets = Number(response.data.count);
+                if (!Number.isFinite(totalPresets) || totalPresets < 0) {
+                    totalPresets = 0;
+                }
+
+                var titleSet = presetSnapshot &&
+                        presetSnapshot.productId === productId &&
+                        presetSnapshot.titles instanceof Set
+                    ? new Set(presetSnapshot.titles)
+                    : new Set();
+
+                var titlesIncluded = includeTitles ? response.data.titles_included !== false : (presetSnapshot ? !!presetSnapshot.titlesIncluded : false);
+                if (includeTitles) {
+                    titleSet = new Set();
+                    var titlesArray = Array.isArray(response.data.titles)
+                        ? response.data.titles
+                        : [];
+                    titlesArray.forEach(function (title) {
+                        if (title) {
+                            titleSet.add(String(title).trim().toLowerCase());
+                        }
+                    });
+                }
+
+                presetSnapshot = {
+                    productId: productId,
+                    count: totalPresets,
+                    titles: titleSet,
+                    titlesIncluded: titlesIncluded,
+                };
+
+                if (includeTitles) {
+                    knownPresetTitles = titleSet;
+                }
+
+                MKL_PC_BulkGenerator.existing_total = totalPresets;
+                updateExistingStat(totalPresets);
+
+                deferred.resolve(presetSnapshot);
+            })
+            .fail(function (xhr) {
+                var message = (xhr && xhr.responseJSON && xhr.responseJSON.data &&
+                    xhr.responseJSON.data.message)
+                    ? xhr.responseJSON.data.message
+                    : (xhr && xhr.statusText) || "Request failed.";
+                deferred.reject(message);
+            })
+            .always(function () {
+                snapshotPromise = null;
+            });
+
+        return deferred.promise();
+    }
 
         function formatDuration(ms) {
             if (!ms || ms < 0) {
@@ -233,6 +377,17 @@
                 .text(text);
         }
 
+        function setEstimateOutput(text, tone) {
+            if (!$estimateOutput.length) {
+                return;
+            }
+            tone = tone || "info";
+            $estimateOutput
+                .removeClass("estimate--info estimate--success estimate--warn estimate--error")
+                .addClass("estimate--" + tone)
+                .text(text);
+        }
+
         function resetLiveView() {
             setStatus(defaultStatusText, "info");
             logEntries = [];
@@ -245,18 +400,29 @@
             if ($skipped.length) {
                 $skipped.text("0");
             }
+            if ($estimateOutput.length) {
+                setEstimateOutput(
+                    MKL_PC_BulkGenerator.strings.estimate_prompt ||
+                        "Tap estimate to calculate.",
+                    "info",
+                );
+            }
+            if ($estimateBtn.length && !estimatingInProgress) {
+                $estimateBtn.prop("disabled", false).text(defaultEstimateLabel);
+            }
+            combinationQueue = [];
+            combinationProcessing = false;
+            pendingBatchMeta = null;
         }
 
         function captureButtonState() {
             canGenerateAfterRun = !$generateBtn.prop("disabled");
-            canEstimateAfterRun = !$estimateBtn.prop("disabled");
             canDeleteAfterRun = !$deleteBtn.prop("disabled");
         }
 
         function setRunningState(isRunning) {
             if (isRunning) {
                 captureButtonState();
-                $estimateBtn.prop("disabled", true);
                 $generateBtn
                     .prop("disabled", true)
                     .text(MKL_PC_BulkGenerator.strings.generating || "Generating...");
@@ -266,14 +432,19 @@
                         defaultStopLabel || "Stop Run",
                     );
                 }
+                if ($estimateBtn.length) {
+                    $estimateBtn.prop("disabled", true);
+                }
             } else {
-                $estimateBtn.prop("disabled", !canEstimateAfterRun);
                 $generateBtn
                     .prop("disabled", !canGenerateAfterRun)
                     .text(defaultGenerateLabel);
                 $deleteBtn.prop("disabled", !canDeleteAfterRun);
                 if ($stopBtn.length) {
                     $stopBtn.prop("disabled", true).text(defaultStopLabel || "Stop Run");
+                }
+                if ($estimateBtn.length && !estimatingInProgress) {
+                    $estimateBtn.prop("disabled", false).text(defaultEstimateLabel);
                 }
             }
             scheduleStatsUpdate();
@@ -344,6 +515,9 @@
                 return;
             }
             currentRun.cancelled = true;
+            pendingBatchMeta = null;
+            combinationQueue = [];
+            combinationProcessing = false;
             setStatus(
                 MKL_PC_BulkGenerator.strings.cancelling || "Cancelling...",
                 "warn",
@@ -385,8 +559,82 @@
                 return;
             }
 
-            collectExistingPresetTitles();
+            var preparingLabel = MKL_PC_BulkGenerator.strings.preparing ||
+                "Preparing preset run...";
+            setStatus(preparingLabel, "info");
+            appendLog(preparingLabel, "info", { force: true });
+            setRunningState(true);
+
+            var snapshot = null;
+            if (presetSnapshot && presetSnapshot.productId === productId) {
+                snapshot = presetSnapshot;
+            }
+            if (!snapshot) {
+                var initialCount = Number(MKL_PC_BulkGenerator.existing_total);
+                if (!Number.isFinite(initialCount) || initialCount < 0) {
+                    initialCount = null;
+                }
+                snapshot = {
+                    count: initialCount,
+                    titles: new Set(),
+                    productId: productId,
+                    titlesIncluded: false,
+                };
+                presetSnapshot = snapshot;
+            } else if (!(snapshot.titles instanceof Set)) {
+                snapshot.titles = new Set();
+                snapshot.titlesIncluded = !!snapshot.titlesIncluded;
+            }
+
+            knownPresetTitles = snapshot.titles instanceof Set ? snapshot.titles : new Set();
+            updateExistingStat(snapshot.count);
+
+            var titlesPromise = snapshot.titlesIncluded
+                ? $.Deferred().resolve(snapshot).promise()
+                : requestPresetSnapshot({ force: true, includeTitles: true });
+
+            titlesPromise
+                .done(function (finalSnapshot) {
+                    beginRun(productId, finalSnapshot || snapshot);
+                })
+                .fail(function (errorMessage) {
+                    var message = typeof errorMessage === "string"
+                        ? errorMessage
+                        : "Unable to load existing presets.";
+                    appendLog("Failed to prepare run: " + message, "error", { force: true });
+                    setStatus(
+                        (MKL_PC_BulkGenerator.strings.error || "An error occurred") +
+                            ": " + message,
+                        "error",
+                    );
+                    setRunningState(false);
+                });
+        }
+
+        function beginRun(productId, snapshot) {
+            snapshot = snapshot || {};
+            if (!(snapshot.titles instanceof Set)) {
+                snapshot.titles = new Set();
+            }
+
+            knownPresetTitles = snapshot.titles instanceof Set ? snapshot.titles : new Set();
+            if (!presetSnapshot || presetSnapshot.productId !== productId) {
+                presetSnapshot = {
+                    count: Number.isFinite(snapshot.count) ? snapshot.count : 0,
+                    titles: knownPresetTitles,
+                    productId: productId,
+                    titlesIncluded: !!snapshot.titlesIncluded,
+                };
+            } else {
+                presetSnapshot.count = Number.isFinite(snapshot.count)
+                    ? snapshot.count
+                    : presetSnapshot.count || 0;
+                presetSnapshot.titles = knownPresetTitles;
+                presetSnapshot.titlesIncluded = !!snapshot.titlesIncluded;
+            }
+
             resetLiveView();
+            updateExistingStat(presetSnapshot.count);
             setRunningState(true);
 
             var generatingLabel = MKL_PC_BulkGenerator.strings.generating ||
@@ -402,22 +650,38 @@
                 ? performance.now()
                 : Date.now();
 
+            var chunkSize = chunkSizeConfigured;
+
             runMetrics = window.MKL_PC_BulkMetrics = {
                 startedAt: now,
-                preloads: [],
                 batches: [],
                 applyDurations: [],
                 saveDurations: [],
                 totalPresets: 0,
                 asyncThumbnails: 0,
                 skippedDuplicates: 0,
+                skippedServer: 0,
+                chunkSize: chunkSize,
+                attemptedTotal: 0,
+                initialExisting: Number.isFinite(presetSnapshot.count)
+                    ? presetSnapshot.count
+                    : 0,
             };
 
             currentRun = {
                 productId: productId,
                 cancelled: false,
                 finished: false,
+                chunkSize: chunkSize,
+                attemptedTotal: 0,
+                initialExisting: runMetrics.initialExisting,
             };
+
+            appendLog(
+                "Batch size " + formatNumber(chunkSize) + " combinations per request.",
+                "info",
+                { force: true },
+            );
 
             if (statsTicker) {
                 clearInterval(statsTicker);
@@ -434,179 +698,70 @@
             $container.find('[data-stat="generated"]').text("0");
 
             scheduleStatsUpdate();
-            processBatch(productId, 0, 0);
+            processBatch(productId, 0);
         }
 
         if ($stopBtn.length) {
             $stopBtn.on("click", cancelRun);
         }
 
-        // Estimate button
-        $estimateBtn.on("click", function () {
-            var productId = $(this).data("product-id");
-            if (!productId) {
-                return;
-            }
+        if ($estimateBtn.length) {
+            $estimateBtn.on("click", function () {
+                if (estimatingInProgress) {
+                    return;
+                }
+                var productId = $(this).data("product-id");
+                if (!productId) {
+                    return;
+                }
 
-            setStatus(
-                MKL_PC_BulkGenerator.strings.estimating ||
-                    "Estimating combinations...",
-                "info",
-            );
-            appendLog(
-                "Estimating valid combinations...",
-                "info",
-                { force: true },
-            );
-
-            $estimateBtn
-                .prop("disabled", true)
-                .text(
-                    MKL_PC_BulkGenerator.strings.estimating ||
-                        "Estimating...",
+                estimatingInProgress = true;
+                $estimateBtn
+                    .prop("disabled", true)
+                    .text(MKL_PC_BulkGenerator.strings.estimating || "Estimating...");
+                setEstimateOutput(
+                    MKL_PC_BulkGenerator.strings.estimating || "Estimating...",
+                    "info",
                 );
 
-            $.ajax({
-                url: MKL_PC_BulkGenerator.ajax_url,
-                type: "POST",
-                data: {
-                    action: "mkl_pc_generate_presets_estimate",
-                    nonce: MKL_PC_BulkGenerator.nonce,
-                    product_id: productId,
-                },
-                success: function (response) {
-                    if (response.success) {
-                    var validCount = Number(response.data.valid_count || 0);
-                    var totalChecked = Number(response.data.total_checked || 0);
-                    var totalPossible = Number(response.data.total_possible || 0);
-                    var passRate = typeof response.data.pass_rate !== "undefined"
-                        ? Number(response.data.pass_rate)
-                        : (totalChecked > 0
-                            ? (validCount / totalChecked) * 100
-                            : 0);
-                    var estimateInfo = response.data.estimate || {};
-                    var estimatedPrimary = "";
-                    var detailParts = [];
-
-                    if (estimateInfo.exact && typeof estimateInfo.valid_total !== "undefined") {
-                        estimatedPrimary = formatNumber(estimateInfo.valid_total) + " exact valid";
-                        if (estimateInfo.checked_total) {
-                            detailParts.push(
-                                "Checked " + formatNumber(estimateInfo.checked_total)
-                            );
-                        }
-                        if (estimateInfo.duration) {
-                            detailParts.push(estimateInfo.duration + "s");
-                        }
-                    } else {
-                        var estimatedValue = estimateInfo.valid_estimate
-                            ? Math.round(estimateInfo.valid_estimate)
-                            : validCount;
-
-                        if (estimateInfo.truncated) {
-                            estimatedPrimary = "≥ " + formatNumber(estimatedValue) + " valid";
-                            detailParts.push(
-                                (MKL_PC_BulkGenerator.strings.estimate_truncated || "Enumerated") +
-                                    " " + formatNumber(estimatedValue)
-                            );
+                $.ajax({
+                    url: MKL_PC_BulkGenerator.ajax_url,
+                    type: "POST",
+                    data: {
+                        action: "mkl_pc_generate_presets_estimate",
+                        nonce: MKL_PC_BulkGenerator.nonce,
+                        product_id: productId,
+                    },
+                })
+                    .done(function (response) {
+                        if (response && response.success && response.data) {
+                            var message = response.data.message ||
+                                MKL_PC_BulkGenerator.strings.estimate_complete ||
+                                "Estimate complete.";
+                            setEstimateOutput(message, "success");
                         } else {
-                            var passRateText = (!isNaN(passRate) && isFinite(passRate))
-                                ? Number(passRate).toFixed(passRate >= 10 ? 1 : 2)
-                                : "0";
-                            estimatedPrimary =
-                                formatNumber(estimatedValue) +
-                                " valid (~" + passRateText + "%)";
-
-                            if (
-                                typeof estimateInfo.lower_ci !== "undefined" &&
-                                estimateInfo.lower_ci !== null &&
-                                typeof estimateInfo.upper_ci !== "undefined" &&
-                                estimateInfo.upper_ci !== null
-                            ) {
-                                detailParts.push(
-                                    "95% CI: " +
-                                        formatRange(estimateInfo.lower_ci, estimateInfo.upper_ci)
-                                );
-                            }
-                            if (estimateInfo.samples) {
-                                detailParts.push(
-                                    formatNumber(estimateInfo.samples) + " samples"
-                                );
-                            }
+                            var failMessage = response && response.data && response.data.message
+                                ? response.data.message
+                                : (MKL_PC_BulkGenerator.strings.estimate_failed ||
+                                    "Failed to estimate presets.");
+                            setEstimateOutput(failMessage, "error");
                         }
-                    }
-
-                    if (totalPossible) {
-                        detailParts.push(
-                            "Total combos: " + formatNumber(totalPossible)
-                        );
-                    }
-
-                    $container.find('[data-stat="existing"]').text(
-                        formatNumber(response.data.existing || 0),
-                    );
-
-                    var displayText = estimatedPrimary;
-                    if (detailParts.length) {
-                        displayText += " [" + detailParts.join(" • ") + "]";
-                    }
-
-                    $container.find('[data-stat="estimated"]').text(displayText);
-
-                    $generateBtn.prop("disabled", false);
-                    canGenerateAfterRun = true;
-
-                    var successMessage = response.data.message ||
-                        (MKL_PC_BulkGenerator.strings.estimate_complete || "Estimate complete.");
-                    setStatus(successMessage, "success");
-                    appendLog(
-                        "Estimate ready: " + displayText,
-                        "success",
-                        { force: true },
-                    );
-                    scheduleStatsUpdate();
-                    } else {
-                        var errorMessage = response.data &&
-                                response.data.message
-                            ? response.data.message
-                            : MKL_PC_BulkGenerator.strings.error;
-                        setStatus(
-                            (MKL_PC_BulkGenerator.strings.error || "Error") +
-                                ": " +
-                                errorMessage,
-                            "error",
-                        );
-                        appendLog(
-                            "Estimate failed: " + errorMessage,
-                            "error",
-                            { force: true },
-                        );
-                        alert(
-                            (MKL_PC_BulkGenerator.strings.error || "Error") +
-                                ": " +
-                                errorMessage,
-                        );
-                    }
-                },
-                error: function () {
-                    var errorText = MKL_PC_BulkGenerator.strings.error ||
-                        "An error occurred";
-                    setStatus(errorText, "error");
-                    appendLog(
-                        "Estimate failed: " + errorText,
-                        "error",
-                        { force: true },
-                    );
-                    alert(errorText);
-                },
-                complete: function () {
-                    $estimateBtn
-                        .prop("disabled", false)
-                        .text(defaultEstimateLabel);
-                    scheduleStatsUpdate();
-                },
+                    })
+                    .fail(function (xhr) {
+                        var failMessage = (xhr && xhr.responseJSON && xhr.responseJSON.data && xhr.responseJSON.data.message)
+                            ? xhr.responseJSON.data.message
+                            : (MKL_PC_BulkGenerator.strings.estimate_failed ||
+                                "Failed to estimate presets.");
+                        setEstimateOutput(failMessage, "error");
+                    })
+                    .always(function () {
+                        estimatingInProgress = false;
+                        if (!currentRun || currentRun.finished || currentRun.cancelled) {
+                            $estimateBtn.prop("disabled", false).text(defaultEstimateLabel);
+                        }
+                    });
             });
-        });
+        }
 
         // Generate button
         $generateBtn.on("click", function () {
@@ -662,8 +817,21 @@
                                 " presets deleted successfully.",
                         );
 
-                        // Update existing count
-                        $container.find('[data-stat="existing"]').text("0");
+                        // Update existing snapshot/count
+                        presetSnapshot = {
+                            count: 0,
+                            titles: new Set(),
+                            productId: getProductId(),
+                            titlesIncluded: false,
+                        };
+                        knownPresetTitles = presetSnapshot.titles;
+                        MKL_PC_BulkGenerator.existing_total = 0;
+                        combinationQueue = [];
+                        combinationProcessing = false;
+                        pendingBatchMeta = null;
+                        pendingTargetState = null;
+                        currentConfigState = new Map();
+                        updateExistingStat(0);
                         $container.find('[data-stat="generated"]').text("0");
                         appendLog(
                             response.data.deleted +
@@ -681,7 +849,6 @@
                         if (window.PC_Presets_Configurations) {
                             window.PC_Presets_Configurations.reset();
                         }
-                        collectExistingPresetTitles();
                     } else {
                         setStatus(
                             MKL_PC_BulkGenerator.strings.error + ": " +
@@ -710,10 +877,12 @@
         });
 
         // Process batch function
-        function processBatch(productId, offset, totalGenerated) {
+        function processBatch(productId, offset) {
+            var savedCount = getSavedCount();
+
             if (isRunCancelled()) {
                 finishGeneration(
-                    totalGenerated,
+                    savedCount,
                     MKL_PC_BulkGenerator.strings.cancelled ||
                         "Generation cancelled by user.",
                     { cancelled: true },
@@ -721,66 +890,34 @@
                 return;
             }
 
-            // Preload images on first batch only
-            if (offset === 0 && totalGenerated === 0) {
-                $progress.show();
-                $progressStatus.text(
-                    MKL_PC_BulkGenerator.strings.preloading ||
-                        "Preloading images for instant rendering...",
-                );
-                setStatus(
-                    MKL_PC_BulkGenerator.strings.preloading ||
-                        "Preloading images for instant rendering...",
-                    "info",
-                );
-                appendLog(
-                    "Preloading configurator images...",
-                    "info",
-                    { force: true },
-                );
-
-                var preloadStartedAt =
-                    typeof performance !== "undefined" && performance.now
-                        ? performance.now()
-                        : Date.now();
-
-                preloadConfiguratorImages(function () {
-                    if (runMetrics) {
-                        var now =
-                            typeof performance !== "undefined" && performance.now
-                                ? performance.now()
-                                : Date.now();
-                        runMetrics.preloads.push(now - preloadStartedAt);
-                        scheduleStatsUpdate();
-                    }
-                    setStatus(
-                        MKL_PC_BulkGenerator.strings.preload_complete ||
-                            "Images ready. Searching for valid combinations...",
-                        "info",
-                    );
-                    // Continue with batch generation after preload
-                    processBatchAfterPreload(productId, offset, totalGenerated);
-                });
-                return;
-            }
+            var batchSize = currentRun && currentRun.chunkSize
+                ? currentRun.chunkSize
+                : getChunkSize();
 
             setStatus(
                 MKL_PC_BulkGenerator.strings.searching ||
                     "Searching for next valid combination...",
                 "info",
             );
-            processBatchAfterPreload(productId, offset, totalGenerated);
+            processBatchAfterPreload(productId, offset, batchSize);
         }
 
-        // Process batch after images are preloaded
-        function processBatchAfterPreload(productId, offset, totalGenerated) {
+        // Process batch via AJAX
+        function processBatchAfterPreload(productId, offset, batchSize) {
+            batchSize = batchSize || (currentRun && currentRun.chunkSize
+                ? currentRun.chunkSize
+                : getChunkSize());
+            var savedBeforeBatch = getSavedCount();
+            var attemptsBeforeBatch = runMetrics && Number.isFinite(runMetrics.attemptedTotal)
+                ? runMetrics.attemptedTotal
+                : 0;
             var batchStartedAt =
                 typeof performance !== "undefined" && performance.now
                     ? performance.now()
                     : Date.now();
             if (isRunCancelled()) {
                 finishGeneration(
-                    totalGenerated,
+                    savedBeforeBatch,
                     MKL_PC_BulkGenerator.strings.cancelled ||
                         "Generation cancelled by user.",
                     { cancelled: true },
@@ -802,143 +939,148 @@
                     nonce: MKL_PC_BulkGenerator.nonce,
                     product_id: productId,
                     offset: offset,
-                    batch_size: 50,
-                    total_generated: totalGenerated,
+                    batch_size: batchSize,
+                    batch_index: Math.floor(offset / Math.max(1, batchSize)),
+                    total_generated: attemptsBeforeBatch,
+                    saved_total: savedBeforeBatch,
                 },
                 success: function (response) {
-                    if (response.success) {
-                        // Use server's count (more accurate than client-side addition)
-                        totalGenerated = response.data.total_generated ||
-                            totalGenerated;
-
-                        // Update progress
-                        var progress = response.data.progress || 0;
-                        var safetyLimit = response.data.safety_limit || 500;
-
-                        $progressBar.css("width", progress + "%").text(
-                            progress + "%",
+                    if (response && response.success) {
+                        var data = response.data || {};
+                        var attemptedFromServer = Number(
+                            typeof data.total_generated === "number"
+                                ? data.total_generated
+                                : (typeof data.attempted_total === "number"
+                                    ? data.attempted_total
+                                    : attemptsBeforeBatch),
                         );
-                        $progressStatus.text(
-                            "Generated " + totalGenerated + " / " +
-                                safetyLimit + " valid presets (+" +
-                                response.data.saved + " saved, " +
-                                response.data.skipped + " skipped this batch)",
-                        );
+                        if (!Number.isFinite(attemptedFromServer)) {
+                            attemptedFromServer = attemptsBeforeBatch;
+                        }
+
+                        if (runMetrics) {
+                            runMetrics.attemptedTotal = attemptedFromServer;
+                            runMetrics.skippedServer =
+                                (runMetrics.skippedServer || 0) + (data.skipped || 0);
+                        }
+                        if (currentRun) {
+                            currentRun.attemptedTotal = attemptedFromServer;
+                        }
+
+                        var savedTotal = runMetrics ? runMetrics.totalPresets : 0;
+                        var serverSkippedTotal = runMetrics
+                            ? runMetrics.skippedServer || 0
+                            : (data.skipped || 0);
+                        var duplicateSkipped = runMetrics
+                            ? runMetrics.skippedDuplicates || 0
+                            : 0;
+                        var totalSkipped = serverSkippedTotal + duplicateSkipped;
+
+                        $progressBar.css("width", "0%").text("");
+                        var progressMessage =
+                            "Processed " + formatNumber(attemptedFromServer) +
+                            " combinations • Saved " + formatNumber(savedTotal);
+                        if (totalSkipped > 0) {
+                            progressMessage +=
+                                " • Skipped " + formatNumber(totalSkipped);
+                        }
+                        if (runMetrics && runMetrics.startedAt) {
+                            var nowRate =
+                                typeof performance !== "undefined" && performance.now
+                                    ? performance.now()
+                                    : Date.now();
+                            var elapsedForRate = Math.max(0, nowRate - runMetrics.startedAt);
+                            if (elapsedForRate > 0) {
+                                var rateValue = savedTotal / (elapsedForRate / 60000);
+                                if (rateValue > 0) {
+                                    progressMessage +=
+                                        " • " + rateValue.toFixed(1) + " presets/min";
+                                }
+                            }
+                        }
+
+                        var combosRaw = [];
+                        if (Array.isArray(data.valid_combinations)) {
+                            combosRaw = data.valid_combinations;
+                        } else if (Array.isArray(data.valid_combination)) {
+                            combosRaw = data.valid_combination;
+                        } else if (data.expanded_configuration) {
+                            combosRaw = [{
+                                preset_name: data.preset_name || "",
+                                expanded_configuration: data.expanded_configuration,
+                            }];
+                        }
+
+                        var queuedCount = 0;
+                        combosRaw.forEach(function (combo) {
+                            combinationQueue.push({
+                                productId: productId,
+                                name: combo && combo.preset_name ? combo.preset_name : "",
+                                configuration: combo && Array.isArray(combo.expanded_configuration)
+                                    ? combo.expanded_configuration
+                                    : [],
+                            });
+                            queuedCount++;
+                        });
+
+                        if (queuedCount > 0) {
+                            progressMessage +=
+                                " • Queued " + formatNumber(queuedCount) +
+                                (queuedCount === 1 ? " preset" : " presets");
+                        }
+
+                        $progressStatus.text(progressMessage);
                         setStatus(
                             MKL_PC_BulkGenerator.strings.generating ||
                                 "Generating presets...",
                             "info",
                         );
 
-                        // Update generated count
                         $container.find('[data-stat="generated"]').text(
-                            totalGenerated.toLocaleString(),
+                            formatNumber(savedTotal),
+                        );
+                        updateExistingStat(
+                            (runMetrics ? runMetrics.initialExisting : 0) + savedTotal,
                         );
 
-                        // HYBRID APPROACH: If backend sent a valid combination, expand it using PC.fe
-                        if (
-                            response.data.expanded_configuration &&
-                            Array.isArray(response.data.expanded_configuration)
-                        ) {
-                            response.data.expanded_configuration =
-                                enrichConfigurationOrdering(
-                                    response.data.expanded_configuration,
-                                );
-                            if (runMetrics) {
-                                setStatus(
-                                    "Rendering preset #" +
-                                        (runMetrics.totalPresets + 1) + "...",
-                                    "info",
-                                );
-                            }
-                            if (
-                                runMetrics &&
-                                (runMetrics.totalPresets < 5 ||
-                                    runMetrics.totalPresets % 10 === 0)
-                            ) {
-                                appendLog(
-                                    "Rendering preset #" +
-                                        (runMetrics.totalPresets + 1) +
-                                        "...",
-                                    "info",
-                                );
-                            }
+                        pendingBatchMeta = {
+                            productId: productId,
+                            offset: typeof data.offset === "number" ? data.offset : offset,
+                            isComplete: !!data.is_complete,
+                            message: data.message || "",
+                        };
+
+                        if (!combinationQueue.length) {
                             if (isRunCancelled()) {
                                 finishGeneration(
-                                    totalGenerated,
+                                    getSavedCount(),
                                     MKL_PC_BulkGenerator.strings.cancelled ||
                                         "Generation cancelled by user.",
                                     { cancelled: true },
                                 );
                                 return;
                             }
-                            var applyStartedAt =
-                                typeof performance !== "undefined" && performance.now
-                                    ? performance.now()
-                                    : Date.now();
-                            applyAndSavePreset(
-                                productId,
-                                response.data.preset_name || "",
-                                response.data.expanded_configuration,
-                                function () {
-                                    if (runMetrics) {
-                                        var now =
-                                            typeof performance !== "undefined" && performance.now
-                                                ? performance.now()
-                                                : Date.now();
-                                        runMetrics.applyDurations.push(
-                                            now - applyStartedAt,
-                                        );
-                                        scheduleStatsUpdate();
-                                    }
-                                    if (!response.data.is_complete) {
-                                        if (isRunCancelled()) {
-                                            finishGeneration(
-                                                totalGenerated,
-                                                MKL_PC_BulkGenerator.strings.cancelled ||
-                                                    "Generation cancelled by user.",
-                                                { cancelled: true },
-                                            );
-                                            return;
-                                        }
-                                        processBatch(
-                                            productId,
-                                            response.data.offset,
-                                            totalGenerated,
-                                        );
-                                    } else {
-                                        finishGeneration(
-                                            totalGenerated,
-                                            response.data.message,
-                                        );
-                                    }
-                                },
-                            );
-                        } else if (!response.data.is_complete) {
-                            if (isRunCancelled()) {
+
+                            var meta = pendingBatchMeta;
+                            pendingBatchMeta = null;
+
+                            if (meta.isComplete) {
                                 finishGeneration(
-                                    totalGenerated,
-                                    MKL_PC_BulkGenerator.strings.cancelled ||
-                                        "Generation cancelled by user.",
-                                    { cancelled: true },
+                                    getSavedCount(),
+                                    meta.message,
                                 );
-                                return;
+                            } else {
+                                processBatch(
+                                    productId,
+                                    meta.offset,
+                                );
                             }
-                            // No valid combination in this batch, continue
-                            processBatch(
-                                productId,
-                                response.data.offset,
-                                totalGenerated,
-                            );
-                        } else {
-                            // Complete!
-                            finishGeneration(
-                                totalGenerated,
-                                response.data.message,
-                            );
+                            return;
                         }
+
+                        processCombinationQueue();
                     } else {
-                        var failureMessage = response.data && response.data.message
+                        var failureMessage = response && response.data && response.data.message
                             ? response.data.message
                             : MKL_PC_BulkGenerator.strings.error;
                         setStatus(
@@ -953,13 +1095,13 @@
                             { force: true },
                         );
                         finishGeneration(
-                            totalGenerated,
+                            getSavedCount(),
                             failureMessage,
                             { error: true },
                         );
                         alert(
                             MKL_PC_BulkGenerator.strings.error + ": " +
-                                response.data.message,
+                                failureMessage,
                         );
                     }
                 },
@@ -970,7 +1112,7 @@
                     appendLog(errorText, "error", { force: true });
                     alert(errorText);
                     finishGeneration(
-                        totalGenerated,
+                        getSavedCount(),
                         error,
                         { error: true },
                     );
@@ -988,66 +1130,106 @@
             });
         }
 
-        // Preload all configurator images for instant rendering
-        function preloadConfiguratorImages(callback) {
-            console.log("🖼️ Preloading all configurator images...");
-            var imageUrls = [];
-
-            // Collect all choice images from all layers
-            if (PC.fe.layers) {
-                PC.fe.layers.each(function (layer) {
-                    var choices = layer.get("choices");
-                    if (choices) {
-                        choices.each(function (choice) {
-                            // Get the main image
-                            var mainImage = choice.get_image();
-                            if (mainImage) imageUrls.push(mainImage);
-
-                            // Get thumbnail if different
-                            var thumbnail = choice.get_image("thumbnail");
-                            if (thumbnail && thumbnail !== mainImage) {
-                                imageUrls.push(thumbnail);
-                            }
-
-                            // Get angles (different views)
-                            var angles = choice.get("angles");
-                            if (angles && angles.length) {
-                                angles.forEach(function (angle) {
-                                    if (angle.image && angle.image.large) {
-                                        imageUrls.push(angle.image.large);
-                                    }
-                                });
-                            }
-                        });
-                    }
-                });
-            }
-
-            // Remove duplicates
-            imageUrls = Array.from(new Set(imageUrls));
-
-            console.log("  Found " + imageUrls.length + " images to preload");
-
-            if (imageUrls.length === 0) {
-                callback();
+        function processCombinationQueue() {
+            if (combinationProcessing) {
                 return;
             }
 
-            // Preload all images
-            var loadedCount = 0;
-            var totalCount = imageUrls.length;
+            if (!combinationQueue.length) {
+                if (pendingBatchMeta) {
+                    var meta = pendingBatchMeta;
+                    pendingBatchMeta = null;
 
-            imageUrls.forEach(function (url) {
-                var img = new Image();
-                img.onload = img.onerror = function () {
-                    loadedCount++;
-                    if (loadedCount === totalCount) {
-                        console.log("✓ All images preloaded!");
-                        callback();
+                    if (isRunCancelled()) {
+                        finishGeneration(
+                            getSavedCount(),
+                            MKL_PC_BulkGenerator.strings.cancelled ||
+                                "Generation cancelled by user.",
+                            { cancelled: true },
+                        );
+                        return;
                     }
-                };
-                img.src = url;
-            });
+
+                    if (meta.isComplete) {
+                        finishGeneration(
+                            getSavedCount(),
+                            meta.message,
+                        );
+                    } else {
+                        processBatch(
+                            meta.productId || (currentRun ? currentRun.productId : null),
+                            meta.offset,
+                        );
+                    }
+                }
+                return;
+            }
+
+            if (isRunCancelled()) {
+                combinationQueue = [];
+                combinationProcessing = false;
+                pendingBatchMeta = null;
+                finishGeneration(
+                    getSavedCount(),
+                    MKL_PC_BulkGenerator.strings.cancelled ||
+                        "Generation cancelled by user.",
+                    { cancelled: true },
+                );
+                return;
+            }
+
+            combinationProcessing = true;
+            var nextItem = combinationQueue.shift() || {};
+            var targetProductId = nextItem.productId || (currentRun ? currentRun.productId : null);
+            var presetName = nextItem.name || "";
+            var configuration = Array.isArray(nextItem.configuration)
+                ? nextItem.configuration
+                : [];
+
+            if (!targetProductId || !configuration.length) {
+                combinationProcessing = false;
+                setTimeout(processCombinationQueue, 0);
+                return;
+            }
+
+            if (runMetrics) {
+                setStatus(
+                    "Rendering preset #" + (runMetrics.totalPresets + 1) + "...",
+                    "info",
+                );
+                if (
+                    runMetrics.totalPresets < 5 ||
+                    runMetrics.totalPresets % 10 === 0
+                ) {
+                    appendLog(
+                        "Rendering preset #" + (runMetrics.totalPresets + 1) + "...",
+                        "info",
+                    );
+                }
+            }
+
+            var applyStartedAt =
+                typeof performance !== "undefined" && performance.now
+                    ? performance.now()
+                    : Date.now();
+
+            applyAndSavePreset(
+                targetProductId,
+                presetName,
+                configuration,
+                function () {
+                    if (runMetrics) {
+                        var now =
+                            typeof performance !== "undefined" && performance.now
+                                ? performance.now()
+                                : Date.now();
+                        runMetrics.applyDurations.push(now - applyStartedAt);
+                        scheduleStatsUpdate();
+                    }
+                    combinationProcessing = false;
+                    processCombinationQueue();
+                },
+            );
         }
 
         function savePresetConfiguration(
@@ -1084,6 +1266,7 @@
                         (runMetrics.skippedDuplicates || 0) + 1;
                     scheduleStatsUpdate();
                 }
+                pendingTargetState = null;
                 setTimeout(callback, 120);
                 return;
             }
@@ -1117,14 +1300,40 @@
 
                     if (response.success && presetId) {
                         console.log("✓ Preset saved:", generatedName, "#", presetId);
+
+                        var updatedExistingTotal;
                         if (runMetrics) {
                             runMetrics.totalPresets += 1;
+                            updatedExistingTotal = runMetrics.initialExisting + runMetrics.totalPresets;
                             scheduleStatsUpdate();
+                        } else {
+                            updatedExistingTotal = (MKL_PC_BulkGenerator.existing_total || 0) + 1;
                         }
 
                         if (titleKey) {
                             knownPresetTitles.add(titleKey);
                         }
+
+                        if (pendingTargetState && typeof pendingTargetState.forEach === "function") {
+                            currentConfigState = new Map();
+                            pendingTargetState.forEach(function (value, key) {
+                                currentConfigState.set(key, value);
+                            });
+                            pendingTargetState = null;
+                        } else {
+                            currentConfigState = new Map();
+                            userSelections.forEach(function (choice) {
+                                currentConfigState.set(String(choice.layer_id), choice.choice_id);
+                            });
+                        }
+
+                        if (presetSnapshot && presetSnapshot.productId === productId) {
+                            presetSnapshot.count = updatedExistingTotal;
+                            presetSnapshot.titles = knownPresetTitles;
+                        }
+
+                        MKL_PC_BulkGenerator.existing_total = updatedExistingTotal;
+                        updateExistingStat(updatedExistingTotal);
 
                         var $presetInput = $('.mkl_pc_admin input[name="new_preset_title"]');
                         if ($presetInput.length) {
@@ -1193,6 +1402,13 @@
                         if (titleKey) {
                             knownPresetTitles.add(titleKey);
                         }
+                        if (pendingTargetState && typeof pendingTargetState.forEach === "function") {
+                            currentConfigState = new Map();
+                            pendingTargetState.forEach(function (value, key) {
+                                currentConfigState.set(key, value);
+                            });
+                            pendingTargetState = null;
+                        }
                         setTimeout(callback, 200);
                         return;
                     }
@@ -1207,6 +1423,7 @@
                         "error",
                         { force: true },
                     );
+                    pendingTargetState = null;
                     setTimeout(callback, 200);
                 },
                 error: function (xhr, status, error) {
@@ -1220,6 +1437,7 @@
                         "error",
                         { force: true },
                     );
+                    pendingTargetState = null;
                     setTimeout(callback, 200);
                 },
                 complete: function () {
@@ -1240,16 +1458,6 @@
             var productName = "Heavy Duty Workbench"; // Could get from PC.fe data
             var nameParts = [];
 
-            // Ambiguous choice names that should be prefixed with layer name
-            var ambiguousChoices = [
-                "Yes",
-                "No",
-                "Enabled",
-                "Disabled",
-                "On",
-                "Off",
-            ];
-
             // Extract non-"None" user choices (exclude visual/group layers)
             configArray.forEach(function (layer) {
                 // Only include user-selectable choices that aren't "None", "No", or empty
@@ -1261,17 +1469,14 @@
                     layer.name !== "" &&
                     !layer.layer_name.startsWith("Visual -")
                 ) {
-                    // For ambiguous choice names, prefix with layer name
-                    if (ambiguousChoices.indexOf(layer.name) !== -1) {
-                        nameParts.push(layer.layer_name + ": " + layer.name);
-                    } else {
-                        // For descriptive choices (like "4 Drawer Unit"), just use the choice name
-                        nameParts.push(layer.name);
-                    }
+                    nameParts.push(layer.layer_name + ": " + layer.name);
                 }
             });
 
-            var name = productName + " - " + nameParts.join(" - ");
+            var name = productName;
+            if (nameParts.length) {
+                name += " - " + nameParts.join(" - ");
+            }
 
             // Truncate if too long
             if (name.length > 200) {
@@ -1305,6 +1510,30 @@
                 expandedConfiguration,
             );
 
+            var resolvedPresetName = presetName && presetName.length
+                ? presetName
+                : generatePresetName(expandedConfiguration);
+            var normalizedResolvedName = resolvedPresetName
+                ? resolvedPresetName.trim().toLowerCase()
+                : "";
+
+            if (normalizedResolvedName && knownPresetTitles.has(normalizedResolvedName)) {
+                appendLog(
+                    "Skipped duplicate preset: " + resolvedPresetName,
+                    "warn",
+                    { force: true },
+                );
+                if (runMetrics) {
+                    runMetrics.skippedDuplicates =
+                        (runMetrics.skippedDuplicates || 0) + 1;
+                    scheduleStatsUpdate();
+                }
+                setTimeout(callback, 50);
+                return;
+            }
+
+            presetName = resolvedPresetName;
+
             if (!PC || !PC.fe || typeof PC.fe.setConfig !== "function") {
                 console.warn(
                     "Configurator not ready, saving configuration directly.",
@@ -1323,7 +1552,6 @@
                     item &&
                     item.is_choice &&
                     item.layer_id &&
-                    item.choice_id &&
                     (!item.layer_name ||
                         item.layer_name.indexOf("Visual -") !== 0)
                 );
@@ -1360,26 +1588,36 @@
                 return orderA - orderB;
             });
 
-            if (!userSelections.length) {
+            var targetStateMap = new Map();
+            userSelections.forEach(function (item) {
+                targetStateMap.set(String(item.layer_id), item.choice_id);
+            });
+            pendingTargetState = targetStateMap;
+
+            var queueSelections = userSelections.filter(function (item) {
+                var prev = currentConfigState.has(String(item.layer_id))
+                    ? currentConfigState.get(String(item.layer_id))
+                    : null;
+                return prev !== item.choice_id;
+            });
+
+            if (!queueSelections.length) {
                 savePresetConfiguration(
                     productId,
                     presetName,
                     expandedConfiguration,
-                    callback,
+                    function () {
+                        currentConfigState = new Map();
+                        userSelections.forEach(function (choice) {
+                            currentConfigState.set(String(choice.layer_id), choice.choice_id);
+                        });
+                        callback();
+                    },
                 );
                 return;
             }
 
-            var configItems = userSelections.map(function (item) {
-                return {
-                    layer_id: item.layer_id,
-                    choice_id: item.choice_id,
-                };
-            });
-
-            PC.fe.setConfig(configItems);
-
-            var queue = userSelections.slice();
+            var queue = queueSelections.slice();
 
             function openLayer(layer, onReady, attempt) {
                 attempt = attempt || 0;
@@ -1547,18 +1785,22 @@
                 return;
             }
 
+            combinationQueue = [];
+            combinationProcessing = false;
+            pendingBatchMeta = null;
+            pendingTargetState = null;
+
             var $container = $(".mkl-pc-bulk-generator");
             var $progress = $container.find(".mkl-pc-bulk-generator-progress");
             var $progressBar = $progress.find(".progress-bar");
             var $progressStatus = $progress.find(".progress-status");
             var productIdForRefresh = currentRun ? currentRun.productId : null;
-            var ajaxEndpoint = (typeof MKL_PC_BulkGenerator !== "undefined" &&
-                MKL_PC_BulkGenerator.ajax_url)
-                ? MKL_PC_BulkGenerator.ajax_url
-                : (typeof ajaxurl !== "undefined" ? ajaxurl : null);
-
             var cancelled = !!options.cancelled;
             var errored = !!options.error;
+            var savedTotal = runMetrics ? runMetrics.totalPresets : totalGenerated;
+            var attemptedTotal = runMetrics && typeof runMetrics.attemptedTotal === "number"
+                ? runMetrics.attemptedTotal
+                : totalGenerated;
 
             var defaultMessage = cancelled
                 ? (MKL_PC_BulkGenerator.strings.cancelled ||
@@ -1575,66 +1817,66 @@
             markRunFinished();
 
             $progressBar.css("width", "100%").text("100%");
-            $progressStatus.text(finalMessage);
+            var completionSummary = finalMessage +
+                " • Saved " + formatNumber(savedTotal) +
+                (attemptedTotal > savedTotal
+                    ? " (attempted " + formatNumber(attemptedTotal) + ")"
+                    : "");
+            var skippedSummary = runMetrics
+                ? (runMetrics.skippedDuplicates || 0) + (runMetrics.skippedServer || 0)
+                : 0;
+            if (skippedSummary > 0) {
+                completionSummary += " • Skipped " + formatNumber(skippedSummary);
+            }
+            $progressStatus.text(completionSummary);
+            var existingTotal = runMetrics
+                ? runMetrics.initialExisting + savedTotal
+                : savedTotal;
             $container.find('[data-stat="generated"]').text(
-                totalGenerated.toLocaleString(),
+                formatNumber(savedTotal),
             );
-            $container.find('[data-stat="existing"]').text(
-                totalGenerated.toLocaleString(),
-            );
+            updateExistingStat(existingTotal);
+            MKL_PC_BulkGenerator.existing_total = existingTotal;
             setStatus(finalMessage, statusTone);
+
+            if (presetSnapshot && presetSnapshot.productId === productIdForRefresh) {
+                presetSnapshot.count = existingTotal;
+                presetSnapshot.titles = knownPresetTitles;
+            }
+
+            var skippedText = skippedSummary > 0
+                ? " (" + formatNumber(skippedSummary) + " skipped)"
+                : "";
 
             if (cancelled) {
                 appendLog(
-                    "Generation cancelled after " + totalGenerated + " presets" +
-                        (runMetrics && runMetrics.skippedDuplicates
-                            ? " (" + runMetrics.skippedDuplicates + " skipped)"
-                            : "") +
+                    "Generation cancelled after saving " + formatNumber(savedTotal) +
+                        " presets (attempted " + formatNumber(attemptedTotal) + ")" +
+                        skippedText +
                         ".",
                     "warn",
                     { force: true },
                 );
             } else if (errored) {
                 appendLog(
-                    "Generation stopped after " + totalGenerated + " presets" +
-                        (runMetrics && runMetrics.skippedDuplicates
-                            ? " (" + runMetrics.skippedDuplicates + " skipped)"
-                            : "") +
+                    "Generation stopped after saving " + formatNumber(savedTotal) +
+                        " presets (attempted " + formatNumber(attemptedTotal) + ")" +
+                        skippedText +
                         ".",
                     "error",
                     { force: true },
                 );
             } else {
                 appendLog(
-                    "Generation complete (" + totalGenerated + " presets" +
-                        (runMetrics && runMetrics.skippedDuplicates
-                            ? ", " + runMetrics.skippedDuplicates + " skipped"
+                    "Generation complete: saved " + formatNumber(savedTotal) +
+                        " presets (attempted " + formatNumber(attemptedTotal) +
+                        (skippedSummary > 0
+                            ? ", " + formatNumber(skippedSummary) + " skipped"
                             : "") +
                         ").",
                     "success",
                     { force: true },
                 );
-            }
-
-            if (productIdForRefresh && ajaxEndpoint && window.PC_Presets_Configurations) {
-                $.ajax({
-                    url: ajaxEndpoint,
-                    type: "GET",
-                    data: {
-                        action: "mkl_pc_get_content",
-                        data: "configurations",
-                        id: productIdForRefresh,
-                        status: "preset",
-                    },
-                    success: function (configs) {
-                        if (configs && Array.isArray(configs)) {
-                            window.PC_Presets_Configurations.reset(configs);
-                            collectExistingPresetTitles();
-                        }
-                    },
-                });
-            } else {
-                collectExistingPresetTitles();
             }
 
             if (runMetrics) {
@@ -1663,8 +1905,7 @@
                 console.table({
                     presets: runMetrics.totalPresets,
                     totalTimeMs: Math.round(totalTime),
-                    preloadCount: runMetrics.preloads.length,
-                    avgPreloadMs: Math.round(average(runMetrics.preloads)),
+                    chunkSize: runMetrics.chunkSize,
                     batches: runMetrics.batches.length,
                     avgBatchMs: Math.round(average(runMetrics.batches)),
                     saves: runMetrics.saveDurations.length,
@@ -1672,9 +1913,11 @@
                     applyCalls: runMetrics.applyDurations.length,
                     avgApplyMs: Math.round(average(runMetrics.applyDurations)),
                     asyncThumbnails: runMetrics.asyncThumbnails || 0,
+                    skippedServer: runMetrics.skippedServer || 0,
                     skippedDuplicates: runMetrics.skippedDuplicates || 0,
+                    attemptedTotal: runMetrics.attemptedTotal || 0,
+                    initialExisting: runMetrics.initialExisting || 0,
                 });
-                console.log("Preload durations (ms):", runMetrics.preloads);
                 console.log("Batch AJAX durations (ms):", runMetrics.batches);
                 console.log("Apply durations (ms):", runMetrics.applyDurations);
                 console.log("Save AJAX durations (ms):", runMetrics.saveDurations);

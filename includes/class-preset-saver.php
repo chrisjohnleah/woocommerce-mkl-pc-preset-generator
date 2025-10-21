@@ -269,8 +269,13 @@ class MKL_PC_Preset_Saver
         $name_parts = [];
 
         foreach ($combination as $choice) {
-            if ($choice['choice_id'] !== null && $choice['choice_name'] !== 'None') {
-                $name_parts[] = $choice['choice_name'];
+            if (
+                $choice['choice_id'] !== null &&
+                $choice['choice_name'] !== 'None' &&
+                isset($choice['layer_name']) &&
+                $choice['layer_name'] !== ''
+            ) {
+                $name_parts[] = $choice['layer_name'] . ': ' . $choice['choice_name'];
             }
         }
 

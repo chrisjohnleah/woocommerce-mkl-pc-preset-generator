@@ -38,6 +38,7 @@ class MKL_PC_Preset_Generator_Admin_UI
         // AJAX handlers
         add_action('wp_ajax_mkl_pc_generate_presets_estimate', [$this, 'ajax_estimate']);
         add_action('wp_ajax_mkl_pc_generate_presets_batch', [$this, 'ajax_generate_batch']);
+        add_action('wp_ajax_mkl_pc_get_preset_snapshot', [$this, 'ajax_get_preset_snapshot']);
         add_action('wp_ajax_mkl_pc_save_expanded_preset', [$this, 'ajax_save_expanded_preset']);
         add_action('wp_ajax_mkl_pc_delete_all_presets', [$this, 'ajax_delete_all']);
     }
@@ -206,6 +207,44 @@ class MKL_PC_Preset_Generator_Admin_UI
                 margin-top: 5px;
             }
 
+            .mkl-pc-estimate-results {
+                margin-top: 16px;
+                padding: 12px;
+                border: 1px solid #e2e8f0;
+                border-radius: 6px;
+                background: #ffffff;
+            }
+
+            .mkl-pc-estimate-results .estimate-label {
+                font-size: 12px;
+                text-transform: uppercase;
+                letter-spacing: 0.06em;
+                color: #64748b;
+                margin-bottom: 4px;
+            }
+
+            .mkl-pc-estimate-results .estimate-value {
+                font-size: 14px;
+                color: #0f172a;
+                line-height: 1.4;
+            }
+
+            .mkl-pc-estimate-results .estimate-value.estimate--success {
+                color: #047857;
+            }
+
+            .mkl-pc-estimate-results .estimate-value.estimate--info {
+                color: #0f172a;
+            }
+
+            .mkl-pc-estimate-results .estimate-value.estimate--warn {
+                color: #b7791f;
+            }
+
+            .mkl-pc-estimate-results .estimate-value.estimate--error {
+                color: #dc2626;
+            }
+
             .mkl-pc-bulk-generator-actions button.stop {
                 background: #f0ad4e;
                 color: #1f2d3d;
@@ -340,11 +379,11 @@ class MKL_PC_Preset_Generator_Admin_UI
                 <p><?php esc_html_e('Automatically generate all valid configuration combinations based on conditional logic rules.', 'mkl-pc-preset-generator'); ?></p>
 
                 <div class="mkl-pc-bulk-generator-actions">
-                    <button type="button" class="mkl-pc-estimate-btn primary" data-product-id="<?php echo esc_attr($product_id); ?>">
-                        <?php esc_html_e('Estimate Combinations', 'mkl-pc-preset-generator'); ?>
-                    </button>
                     <button type="button" class="mkl-pc-generate-btn primary" data-product-id="<?php echo esc_attr($product_id); ?>" disabled>
                         <?php esc_html_e('Generate All Presets', 'mkl-pc-preset-generator'); ?>
+                    </button>
+                    <button type="button" class="mkl-pc-estimate-btn secondary" data-product-id="<?php echo esc_attr($product_id); ?>">
+                        <?php esc_html_e('Estimate Valid Presets', 'mkl-pc-preset-generator'); ?>
                     </button>
                     <button type="button" class="mkl-pc-delete-all-btn danger" data-product-id="<?php echo esc_attr($product_id); ?>">
                         <?php esc_html_e('Delete All Presets', 'mkl-pc-preset-generator'); ?>
@@ -359,10 +398,6 @@ class MKL_PC_Preset_Generator_Admin_UI
                         <div class="mkl-pc-bulk-generator-info">
                             <div class="mkl-pc-bulk-stats">
                                 <div class="mkl-pc-bulk-stat">
-                                    <div class="mkl-pc-bulk-stat-value" data-stat="estimated">-</div>
-                                    <div class="mkl-pc-bulk-stat-label"><?php esc_html_e('Estimated Total', 'mkl-pc-preset-generator'); ?></div>
-                                </div>
-                                <div class="mkl-pc-bulk-stat">
                                     <div class="mkl-pc-bulk-stat-value" data-stat="existing">-</div>
                                     <div class="mkl-pc-bulk-stat-label"><?php esc_html_e('Existing Presets', 'mkl-pc-preset-generator'); ?></div>
                                 </div>
@@ -370,6 +405,10 @@ class MKL_PC_Preset_Generator_Admin_UI
                                     <div class="mkl-pc-bulk-stat-value" data-stat="generated">0</div>
                                     <div class="mkl-pc-bulk-stat-label"><?php esc_html_e('Generated', 'mkl-pc-preset-generator'); ?></div>
                                 </div>
+                            </div>
+                            <div class="mkl-pc-estimate-results">
+                                <div class="estimate-label"><?php esc_html_e('Estimate', 'mkl-pc-preset-generator'); ?></div>
+                                <div class="estimate-value" data-live="estimate-output"><?php esc_html_e('Tap estimate to calculate.', 'mkl-pc-preset-generator'); ?></div>
                             </div>
                         </div>
                     </div>
@@ -435,6 +474,8 @@ class MKL_PC_Preset_Generator_Admin_UI
             return;
         }
 
+        $product_id = intval($_REQUEST['pc-presets-admin']);
+
         wp_enqueue_script(
             'mkl-pc-bulk-generator',
             MKL_PC_PRESET_GENERATOR_URL . 'assets/js/bulk-generator.js',
@@ -445,17 +486,25 @@ class MKL_PC_Preset_Generator_Admin_UI
 
         error_log('MKL PC Bulk Generator: Script URL: ' . MKL_PC_PRESET_GENERATOR_URL . 'assets/js/bulk-generator.js');
 
+        global $wpdb;
+        $existing_total = (int) $wpdb->get_var(
+            $wpdb->prepare(
+                "SELECT COUNT(ID) FROM {$wpdb->posts} WHERE post_parent = %d AND post_type = %s AND post_status = %s",
+                $product_id,
+                'mkl_pc_configuration',
+                'preset'
+            )
+        );
+
         wp_localize_script('mkl-pc-bulk-generator', 'MKL_PC_BulkGenerator', [
             'ajax_url' => admin_url('admin-ajax.php'),
             'nonce' => wp_create_nonce('mkl_pc_bulk_generator'),
             'strings' => [
-                'estimating' => __('Estimating combinations...', 'mkl-pc-preset-generator'),
+                'preparing' => __('Preparing preset run...', 'mkl-pc-preset-generator'),
                 'generating' => __('Generating presets...', 'mkl-pc-preset-generator'),
                 'complete' => __('Generation complete!', 'mkl-pc-preset-generator'),
                 'error' => __('An error occurred', 'mkl-pc-preset-generator'),
                 'ready' => __('Ready to start.', 'mkl-pc-preset-generator'),
-                'preloading' => __('Preloading images for instant rendering...', 'mkl-pc-preset-generator'),
-                'preload_complete' => __('Images ready. Searching for valid combinations...', 'mkl-pc-preset-generator'),
                 'searching' => __('Searching for valid combinations...', 'mkl-pc-preset-generator'),
                 'saving' => __('Saving preset...', 'mkl-pc-preset-generator'),
                 'cancelling' => __('Cancelling...', 'mkl-pc-preset-generator'),
@@ -464,13 +513,81 @@ class MKL_PC_Preset_Generator_Admin_UI
                 'deleted' => __('Presets deleted.', 'mkl-pc-preset-generator'),
                 'log_empty' => __('Activity will appear here once generation starts.', 'mkl-pc-preset-generator'),
                 'confirm_start' => __('Start generating all valid preset combinations?', 'mkl-pc-preset-generator'),
-                'estimate_complete' => __('Estimate complete.', 'mkl-pc-preset-generator'),
-                'estimate_truncated' => __('Enumerated', 'mkl-pc-preset-generator'),
                 'confirm_delete' => __('Are you sure you want to delete all presets for this product? This cannot be undone.', 'mkl-pc-preset-generator'),
+                'estimate_action' => __('Estimate Valid Presets', 'mkl-pc-preset-generator'),
+                'estimating' => __('Estimating...', 'mkl-pc-preset-generator'),
+                'estimate_prompt' => __('Tap estimate to calculate.', 'mkl-pc-preset-generator'),
+                'estimate_complete' => __('Estimate complete.', 'mkl-pc-preset-generator'),
+                'estimate_failed' => __('Failed to estimate presets.', 'mkl-pc-preset-generator'),
             ],
+            'batch_size' => (int) apply_filters('mkl_pc_preset_generator_batch_size', 50, $product_id),
+            'existing_total' => $existing_total,
+            'debug' => true,
         ]);
 
         error_log('MKL PC Bulk Generator: Scripts enqueued and localized');
+    }
+
+    /**
+     * AJAX: Snapshot of existing presets for a product.
+     */
+    public function ajax_get_preset_snapshot()
+    {
+        check_ajax_referer('mkl_pc_bulk_generator', 'nonce');
+
+        if (! current_user_can('manage_woocommerce')) {
+            wp_send_json_error(['message' => __('Permission denied', 'mkl-pc-preset-generator')]);
+        }
+
+        $product_id = isset($_POST['product_id']) ? intval($_POST['product_id']) : 0;
+
+        if (! $product_id) {
+            wp_send_json_error(['message' => __('Invalid product ID', 'mkl-pc-preset-generator')]);
+        }
+
+        global $wpdb;
+
+        $include_titles = true;
+        if (isset($_POST['include_titles'])) {
+            $include_titles = filter_var($_POST['include_titles'], FILTER_VALIDATE_BOOLEAN);
+        }
+
+        $total = (int) $wpdb->get_var(
+            $wpdb->prepare(
+                "SELECT COUNT(ID) FROM {$wpdb->posts} WHERE post_parent = %d AND post_type = %s AND post_status = %s",
+                $product_id,
+                'mkl_pc_configuration',
+                'preset'
+            )
+        );
+
+        $titles = [];
+        if ($include_titles && $total > 0) {
+            $rows = $wpdb->get_results(
+                $wpdb->prepare(
+                    "SELECT post_title FROM {$wpdb->posts} WHERE post_parent = %d AND post_type = %s AND post_status = %s",
+                    $product_id,
+                    'mkl_pc_configuration',
+                    'preset'
+                ),
+                ARRAY_A
+            );
+
+            if (is_array($rows)) {
+                foreach ($rows as $row) {
+                    if (isset($row['post_title'])) {
+                        $titles[] = $row['post_title'];
+                    }
+                }
+            }
+        }
+
+        wp_send_json_success([
+            'product_id' => $product_id,
+            'count' => $total,
+            'titles' => array_values($titles),
+            'titles_included' => $include_titles,
+        ]);
     }
 
     /**
@@ -617,29 +734,43 @@ class MKL_PC_Preset_Generator_Admin_UI
 
             $product_id = isset($_POST['product_id']) ? intval($_POST['product_id']) : 0;
             $offset = isset($_POST['offset']) ? intval($_POST['offset']) : 0;
-            $batch_size = isset($_POST['batch_size']) ? intval($_POST['batch_size']) : 50;
-            $total_generated = isset($_POST['total_generated']) ? intval($_POST['total_generated']) : 0;
+            $default_batch_size = apply_filters('mkl_pc_preset_generator_batch_size', 50, $product_id);
+            $batch_size = isset($_POST['batch_size']) ? intval($_POST['batch_size']) : intval($default_batch_size);
+            $attempted_total = isset($_POST['total_generated']) ? intval($_POST['total_generated']) : 0;
+            $saved_total = isset($_POST['saved_total']) ? intval($_POST['saved_total']) : 0;
+            $max_batch_size = apply_filters('mkl_pc_preset_generator_max_batch_size', 250, $product_id);
+
+            if ($batch_size < 1) {
+                $batch_size = 1;
+            }
+            if ($max_batch_size > 0) {
+                $batch_size = min($batch_size, intval($max_batch_size));
+            }
 
             if (! $product_id) {
                 wp_send_json_error(['message' => __('Invalid product ID', 'mkl-pc-preset-generator')]);
             }
 
-            // SAFETY LIMIT: Stop after 500 valid presets for testing
-            // TODO: Remove this limit once code is proven to work correctly
-            $SAFETY_LIMIT = 500;
+            // Optional safety guard to stop runaway generation (0 disables the guard)
+            $SAFETY_LIMIT = apply_filters('mkl_pc_preset_generator_safety_attempt_limit', 0, $product_id);
 
-            if ($total_generated >= $SAFETY_LIMIT) {
-                error_log("SAFETY LIMIT REACHED: $total_generated presets generated. Stopping.");
+            if ($SAFETY_LIMIT > 0 && $attempted_total >= $SAFETY_LIMIT) {
+                $limit_message = __('Safety limit reached. Stopping generation.', 'mkl-pc-preset-generator');
+                error_log("SAFETY LIMIT REACHED EARLY: $attempted_total (limit $SAFETY_LIMIT).");
                 wp_send_json_success([
                     'saved' => 0,
                     'skipped' => 0,
                     'offset' => $offset,
                     'total' => $offset,
                     'is_complete' => true,
-                    'progress' => 100,
-                    'total_generated' => $total_generated,
+                    'progress' => 0,
+                    'total_generated' => $attempted_total,
+                    'attempted_total' => $attempted_total,
+                    'saved_total' => $saved_total,
                     'safety_limit' => $SAFETY_LIMIT,
-                    'message' => "Safety limit reached: $total_generated valid presets created. Remove the limit in code to generate more.",
+                    'target_total' => 0,
+                    'run_limit' => 0,
+                    'message' => $limit_message,
                 ]);
                 return;  // IMPORTANT: Exit immediately!
             }
@@ -651,6 +782,15 @@ class MKL_PC_Preset_Generator_Admin_UI
             $saver = new MKL_PC_Preset_Saver($product_id);
             $config_builder = new MKL_PC_Configuration_Builder($product_id);
 
+            $offset_key = 'mkl_pc_bulk_offset_' . $product_id;
+            $resume = (bool) get_option('mkl_pc_bulk_resume_enabled', true);
+            if ($resume && $offset === 0) {
+                $stored_offset = intval(get_option($offset_key, 0));
+                if ($stored_offset > 0) {
+                    $offset = $stored_offset;
+                }
+            }
+
             // Generate ONLY this batch of combinations (already filtered by conditional logic)
             error_log("Generating smart batch starting at offset {$offset} (limit {$batch_size})");
             $batch = $smart_generator->generate_batch($offset, $batch_size);
@@ -658,7 +798,7 @@ class MKL_PC_Preset_Generator_Admin_UI
 
             $saved = 0;
             $skipped = 0;
-            $last_valid_combination = null;
+            $valid_combinations = [];
             $consumed = 0;
 
             // Double-check mandatory layers (safety net, smart generator should already enforce this)
@@ -667,25 +807,12 @@ class MKL_PC_Preset_Generator_Admin_UI
             foreach ($batch as $combination) {
                 $consumed++;
 
-                // Require at least the CORE layers to have selections
-                // These are essential for any valid product configuration
-                $core_selections = array_fill_keys($core_layers_required, false);
-
-                foreach ($combination as $choice) {
-                    if (isset($core_selections[$choice['layer_name']])) {
-                        if ($choice['choice_id'] !== null && $choice['choice_name'] !== 'None') {
-                            $core_selections[$choice['layer_name']] = true;
-                        }
-                    }
-                }
-
-                // Skip if any core layer is missing or set to None
-                if (in_array(false, $core_selections, true)) {
+                $evaluation = $this->evaluate_core_layers($combination, $core_layers_required);
+                if (! $evaluation['valid']) {
                     $skipped++;
-                    $missing = array_keys(array_filter($core_selections, function ($selected) {
-                        return ! $selected;
-                    }));
-                    error_log('Smart Generator: skipped combination missing core layers (' . implode(', ', $missing) . ')');
+                    if (!empty($evaluation['missing'])) {
+                        error_log('Smart Generator: skipped combination missing core layers (' . implode(', ', $evaluation['missing']) . ')');
+                    }
                     continue;
                 }
 
@@ -696,15 +823,25 @@ class MKL_PC_Preset_Generator_Admin_UI
 
                 error_log("✓ Smart Generator valid combination: {$combo_str}");
 
-                // Found a valid combination - send to frontend immediately
-                // The frontend will use PC.fe.setConfig() + PC.fe.save_data.save()
-                // to get the complete configuration with all visual layers
+                // Found a valid combination - queue for frontend expansion
                 $saved++;
-                $last_valid_combination = $combination;
 
-                // Stop after finding ONE valid combination per batch
-                // Frontend will expand and save it, then request next batch
-                break;
+                try {
+                    $expanded_configuration = $config_builder->build_complete_configuration($combination);
+                } catch (Exception $e) {
+                    error_log('Bulk Generator: Failed to build expanded configuration - ' . $e->getMessage());
+                    $expanded_configuration = [];
+                }
+
+                $valid_combinations[] = [
+                    'base_combination' => $combination,
+                    'preset_name' => $saver->generate_preset_name($combination, []),
+                    'expanded_configuration' => $expanded_configuration,
+                ];
+
+                if (count($valid_combinations) >= $batch_size) {
+                    break;
+                }
             }
 
             $new_offset = $offset + ($consumed > 0 ? $consumed : 0);
@@ -713,13 +850,19 @@ class MKL_PC_Preset_Generator_Admin_UI
             $is_complete = count($batch) < $batch_size;
 
             // Check if we've hit the safety limit
-            $new_total_generated = $total_generated + $saved;
-            if ($new_total_generated >= $SAFETY_LIMIT) {
+            $new_attempted_total = $attempted_total + $consumed;
+            $new_saved_total = $saved_total; // actual saves are tracked on the frontend
+
+            if ($SAFETY_LIMIT > 0 && $new_attempted_total >= $SAFETY_LIMIT) {
                 $is_complete = true;
-                error_log("SAFETY LIMIT HIT: $new_total_generated valid presets. Stopping generation.");
+                error_log("SAFETY LIMIT HIT: $new_attempted_total attempted combinations. Stopping generation.");
             }
 
-            error_log("Batch complete: Saved=$saved, Skipped=$skipped, NewOffset=$new_offset, TotalGenerated=$new_total_generated, IsComplete=" . ($is_complete ? 'YES' : 'NO'));
+            error_log("Batch complete: Saved=$saved, Skipped=$skipped, NewOffset=$new_offset, AttemptedTotal=$new_attempted_total, SavedTotal=$new_saved_total, IsComplete=" . ($is_complete ? 'YES' : 'NO'));
+
+            if ($resume && ! $is_complete) {
+                update_option($offset_key, $new_offset, false);
+            }
 
             $response = [
                 'saved' => 0, // Will be incremented by frontend after expansion
@@ -727,21 +870,24 @@ class MKL_PC_Preset_Generator_Admin_UI
                 'offset' => $new_offset,
                 'total' => $new_offset,
                 'is_complete' => $is_complete,
-                'progress' => min(100, round(($new_total_generated / $SAFETY_LIMIT) * 100)),
-                'total_generated' => $new_total_generated,
+                'progress' => 0,
+                'total_generated' => $new_attempted_total,
+                'attempted_total' => $new_attempted_total,
+                'saved_total' => $new_saved_total,
                 'safety_limit' => $SAFETY_LIMIT,
+                'target_total' => 0,
+                'run_limit' => 0,
+                'message' => ($SAFETY_LIMIT > 0 && $new_attempted_total >= $SAFETY_LIMIT)
+                    ? __('Safety limit reached. Stopping generation.', 'mkl-pc-preset-generator')
+                    : '',
+                'attempted_batch' => $consumed,
+                'saved_batch' => $saved,
+                'valid_combinations' => $valid_combinations,
             ];
 
-            // Send valid combination to frontend for expansion
-            if ($last_valid_combination) {
-                $response['valid_combination'] = $last_valid_combination;
-                $response['preset_name'] = $saver->generate_preset_name($last_valid_combination, []);
-                try {
-                    $response['expanded_configuration'] = $config_builder->build_complete_configuration($last_valid_combination);
-                } catch (Exception $e) {
-                    error_log('Bulk Generator: Failed to build expanded configuration - ' . $e->getMessage());
-                }
-                error_log("Sending valid combination to frontend for expansion");
+            if ($is_complete && empty($response['message'])) {
+                $response['message'] = __('Generation complete.', 'mkl-pc-preset-generator');
+                delete_option($offset_key);
             }
 
             wp_send_json_success($response);
@@ -777,6 +923,34 @@ class MKL_PC_Preset_Generator_Admin_UI
         }
 
         $configuration = $this->normalize_configuration_layers($configuration);
+        $normalized_title = trim(wp_strip_all_tags($preset_name));
+        $config_hash = $this->generate_configuration_hash($configuration);
+
+        if ($config_hash) {
+            $existing_by_hash = $this->find_existing_preset_by_hash($product_id, $config_hash);
+            if ($existing_by_hash) {
+                error_log("Skipping expanded preset save. Duplicate configuration detected (#$existing_by_hash)");
+                wp_send_json_error([
+                    'message' => __('Duplicate preset configuration already exists', 'mkl-pc-preset-generator'),
+                    'duplicate' => true,
+                    'preset_id' => $existing_by_hash,
+                    'reason' => 'configuration',
+                ]);
+            }
+        }
+
+        if ($normalized_title !== '') {
+            $existing_by_title = $this->find_existing_preset_by_title($product_id, $normalized_title);
+            if ($existing_by_title) {
+                error_log("Skipping expanded preset save. Duplicate title detected (#$existing_by_title)");
+                wp_send_json_error([
+                    'message' => __('Duplicate preset title already exists', 'mkl-pc-preset-generator'),
+                    'duplicate' => true,
+                    'preset_id' => $existing_by_title,
+                    'reason' => 'title',
+                ]);
+            }
+        }
 
         error_log("Saving expanded preset: $preset_name with " . count($configuration) . " layers");
 
@@ -804,6 +978,16 @@ class MKL_PC_Preset_Generator_Admin_UI
                     'ID' => $preset_id,
                     'post_status' => 'preset',
                 ]);
+
+                if ($preset_id) {
+                    update_post_meta($preset_id, '_product_id', $product_id);
+                    if ($config_hash) {
+                        update_post_meta($preset_id, '_config_hash', $config_hash);
+                    }
+                    if ($normalized_title !== '') {
+                        update_post_meta($preset_id, '_preset_title_normalized', strtolower($normalized_title));
+                    }
+                }
 
                 $save_image_async = isset($saved['save_image_async']) ? $saved['save_image_async'] : false;
 
@@ -866,6 +1050,8 @@ class MKL_PC_Preset_Generator_Admin_UI
         $saver = new MKL_PC_Preset_Saver($product_id);
         $deleted = $saver->delete_all_presets();
 
+        delete_option('mkl_pc_bulk_offset_' . $product_id);
+
         wp_send_json_success([
             'deleted' => $deleted,
         ]);
@@ -886,38 +1072,246 @@ class MKL_PC_Preset_Generator_Admin_UI
         $total_theoretical,
         $product_id
     ) {
+        unset($generator, $validator);
         $smart_generator = new MKL_PC_Smart_Combination_Generator($product_id);
 
-        $max_valid = apply_filters('mkl_pc_preset_generator_estimate_exact_valid_limit', 75000, $product_id);
-        $max_time = apply_filters('mkl_pc_preset_generator_estimate_exact_time_limit', 2.5, $product_id);
+        $sample_limit = max(1, (int) apply_filters('mkl_pc_preset_generator_estimate_sample_limit', 5000, $product_id));
+        $time_limit = max(0.1, (float) apply_filters('mkl_pc_preset_generator_estimate_time_limit', 5.0, $product_id));
 
-        $count_result = $smart_generator->count_valid_combinations($max_valid, $max_time);
+        $attempted = 0;
+        $valid = 0;
+        $timed_out = false;
+        $start = microtime(true);
+
+        while ($attempted < $sample_limit && (microtime(true) - $start) < $time_limit) {
+            $sample = $smart_generator->sample_random_combination();
+            if (empty($sample)) {
+                break;
+            }
+
+            $attempted++;
+            if (!empty($sample['valid'])) {
+                $valid++;
+            }
+        }
+
+        $duration = microtime(true) - $start;
+        if ($duration >= $time_limit && $attempted < $sample_limit) {
+            $timed_out = true;
+        }
+        $pass_rate = $attempted > 0 ? $valid / $attempted : 0;
 
         $result = [
-            'samples' => isset($count_result['count']) ? $count_result['count'] : 0,
-            'valid_samples' => isset($count_result['count']) ? $count_result['count'] : 0,
-            'pass_rate' => 0,
-            'duration' => isset($count_result['elapsed']) ? round($count_result['elapsed'], 3) : 0,
+            'samples' => $attempted,
+            'valid_samples' => $valid,
+            'pass_rate' => $pass_rate,
+            'duration' => round($duration, 3),
             'exact' => false,
+            'truncated' => ($attempted < $sample_limit) || $timed_out,
         ];
 
-        if (isset($count_result['complete']) && $count_result['complete']) {
+        if ($pass_rate === 1.0 && $attempted >= $sample_limit) {
             $result['exact'] = true;
-            $result['checked_total'] = $count_result['count'];
-            $result['valid_total'] = $count_result['count'];
-            $result['pass_rate'] = $count_result['count'] > 0 ? 1 : 0;
+            $result['checked_total'] = $attempted;
+            $result['valid_total'] = $attempted;
+            $result['pass_rate'] = 1.0;
 
             return $result;
         }
 
-        $result['valid_estimate'] = $count_result['count'];
-        $result['lower_ci'] = null;
-        $result['upper_ci'] = null;
-        $result['truncated'] = true;
+        $valid_estimate = $pass_rate * $total_theoretical;
+        $result['valid_estimate'] = (int) round(min($total_theoretical, max(0, $valid_estimate)));
+
+        if ($attempted > 0) {
+            list($lower_rate, $upper_rate) = $this->wilson_interval($valid, $attempted, 0.95);
+            $lower_estimate = max(0, round($lower_rate * $total_theoretical));
+            $upper_estimate = max($lower_estimate, round($upper_rate * $total_theoretical));
+            $result['lower_ci'] = $lower_estimate;
+            $result['upper_ci'] = $upper_estimate;
+        } else {
+            $result['lower_ci'] = 0;
+            $result['upper_ci'] = 0;
+        }
 
         return $result;
     }
 
+    /**
+     * Locate existing preset ID by configuration hash.
+     *
+     * @param int $product_id
+     * @param string $config_hash
+     * @return int
+     */
+    private function find_existing_preset_by_hash($product_id, $config_hash)
+    {
+        if (empty($config_hash)) {
+            return 0;
+        }
+
+        $existing = get_posts([
+            'post_type' => 'mkl_pc_configuration',
+            'post_status' => 'preset',
+            'post_parent' => $product_id,
+            'meta_key' => '_config_hash',
+            'meta_value' => $config_hash,
+            'posts_per_page' => 1,
+            'fields' => 'ids',
+        ]);
+
+        return !empty($existing) ? intval($existing[0]) : 0;
+    }
+
+    /**
+     * Locate existing preset ID by exact title match (per product).
+     *
+     * @param int $product_id
+     * @param string $title
+     * @return int
+     */
+    private function find_existing_preset_by_title($product_id, $title)
+    {
+        $title = trim($title);
+        if ($title === '') {
+            return 0;
+        }
+
+        global $wpdb;
+
+        $existing_id = $wpdb->get_var($wpdb->prepare(
+            "SELECT ID FROM {$wpdb->posts} WHERE post_title = %s AND post_type = %s AND post_status = %s AND post_parent = %d LIMIT 1",
+            $title,
+            'mkl_pc_configuration',
+            'preset',
+            $product_id
+        ));
+
+        return $existing_id ? intval($existing_id) : 0;
+    }
+
+    private function evaluate_core_layers(array $combination, array $core_layers_required)
+    {
+        $core_selections = array_fill_keys($core_layers_required, false);
+        $seen_layers = [];
+
+        foreach ($combination as $choice) {
+            if (isset($core_selections[$choice['layer_name']])) {
+                if ($choice['choice_id'] !== null && $choice['choice_name'] !== 'None') {
+                    $core_selections[$choice['layer_name']] = true;
+                }
+            }
+            if (isset($choice['layer_name'])) {
+                $seen_layers[$choice['layer_name']] = true;
+            }
+        }
+
+        foreach ($core_selections as $layer_name => $is_selected) {
+            if (!isset($seen_layers[$layer_name])) {
+                unset($core_selections[$layer_name]);
+            }
+        }
+
+        $missing = array_keys(array_filter($core_selections, function ($selected) {
+            return ! $selected;
+        }));
+
+        return [
+            'valid' => empty($missing),
+            'missing' => $missing,
+        ];
+    }
+
+    private function wilson_interval($successes, $trials, $confidence = 0.95)
+    {
+        if ($trials <= 0) {
+            return [0.0, 0.0];
+        }
+
+        $z = 1.96; // defaults to 95%
+        if ($confidence !== 0.95) {
+            $z = $this->confidence_to_z($confidence);
+        }
+
+        $phat = max(0.0, min(1.0, $successes / $trials));
+        $z2 = $z * $z;
+        $denominator = 1 + ($z2 / $trials);
+        $center = $phat + $z2 / (2 * $trials);
+        $adjustment = $z * sqrt(($phat * (1 - $phat) + $z2 / (4 * $trials)) / $trials);
+
+        $lower = ($center - $adjustment) / $denominator;
+        $upper = ($center + $adjustment) / $denominator;
+
+        return [
+            max(0.0, $lower),
+            min(1.0, $upper),
+        ];
+    }
+
+    private function confidence_to_z($confidence)
+    {
+        // Simple mapping for common confidence levels; default to 1.96
+        switch (round($confidence, 2)) {
+            case 0.90:
+                return 1.645;
+            case 0.95:
+                return 1.96;
+            case 0.99:
+                return 2.576;
+            default:
+                return 1.96;
+        }
+    }
+
+    /**
+     * Build a stable hash representation of the expanded configuration.
+     *
+     * @param array $configuration
+     * @return string|null
+     */
+    private function generate_configuration_hash($configuration)
+    {
+        if (!is_array($configuration) || empty($configuration)) {
+            return null;
+        }
+
+        $pairs = [];
+
+        foreach ($configuration as $entry) {
+            $is_choice = $this->get_layer_property($entry, 'is_choice');
+            if (!$is_choice) {
+                continue;
+            }
+
+            $layer_id = $this->get_layer_property($entry, 'layer_id');
+            $choice_id = $this->get_layer_property($entry, 'choice_id');
+            $choice_name = $this->get_layer_property($entry, 'name');
+
+            if ($layer_id === null || $choice_id === null || $choice_id === '') {
+                continue;
+            }
+
+            if (is_string($choice_name) && strtolower($choice_name) === 'none') {
+                continue;
+            }
+
+            $layer_key = (string) $layer_id;
+            $choice_key = (string) $choice_id;
+
+            if ($layer_key === '' || $choice_key === '') {
+                continue;
+            }
+
+            $pairs[] = $layer_key . ':' . $choice_key;
+        }
+
+        if (empty($pairs)) {
+            return null;
+        }
+
+        sort($pairs, SORT_STRING);
+
+        return md5(implode('|', $pairs));
+    }
 
     /**
      * Ensure configuration layers follow image order to prevent incorrect overlay rendering
