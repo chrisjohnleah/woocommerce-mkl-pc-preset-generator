@@ -4,7 +4,7 @@
  * Plugin Name:       Product Configurator - Bulk Preset Generator
  * Plugin URI:        http://wc-product-configurator.com/
  * Description:       Automatically generate all valid configuration presets based on conditional logic rules
- * Version:           1.1.2
+ * Version:           2.0.0
  * Author:            Happy Webs Limited
  * Author URI:        https://happywebs.co.uk
  * Text Domain:       mkl-pc-preset-generator
@@ -16,7 +16,7 @@ if (! defined('ABSPATH')) {
     die;
 }
 
-define('MKL_PC_PRESET_GENERATOR_VERSION', '1.1.2');
+define('MKL_PC_PRESET_GENERATOR_VERSION', '2.0.0');
 define('MKL_PC_PRESET_GENERATOR_PATH', plugin_dir_path(__FILE__));
 define('MKL_PC_PRESET_GENERATOR_URL', plugin_dir_url(__FILE__));
 
@@ -64,6 +64,11 @@ class MKL_PC_Preset_Bulk_Generator
         require_once MKL_PC_PRESET_GENERATOR_PATH . 'includes/class-conditional-validator.php';
         require_once MKL_PC_PRESET_GENERATOR_PATH . 'includes/class-configuration-builder.php';
         require_once MKL_PC_PRESET_GENERATOR_PATH . 'includes/class-preset-saver.php';
+        require_once MKL_PC_PRESET_GENERATOR_PATH . 'includes/class-bulk-worker.php';
+        require_once MKL_PC_PRESET_GENERATOR_PATH . 'includes/class-run-manager.php';
+        if (defined('WP_CLI') && WP_CLI) {
+            require_once MKL_PC_PRESET_GENERATOR_PATH . 'includes/class-cli-commands.php';
+        }
         require_once MKL_PC_PRESET_GENERATOR_PATH . 'includes/class-admin-ui.php';
 
         // Initialise components

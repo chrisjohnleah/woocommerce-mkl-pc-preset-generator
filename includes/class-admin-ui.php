@@ -14,6 +14,7 @@ class MKL_PC_Preset_Generator_Admin_UI
 {
 
     private static $instance = null;
+    private $run_manager;
 
     /**
      * Get singleton instance
@@ -31,6 +32,8 @@ class MKL_PC_Preset_Generator_Admin_UI
      */
     private function __construct()
     {
+        $this->run_manager = MKL_PC_Preset_Run_Manager::instance();
+
         // Use the same hooks as the preset admin system
         add_action('mkl_pc_scripts_product_page_after', [$this, 'enqueue_scripts']);
         add_action('mkl_pc_frontend_templates_after', [$this, 'add_ui_templates']);
@@ -43,6 +46,182 @@ class MKL_PC_Preset_Generator_Admin_UI
         add_action('wp_ajax_mkl_pc_get_preset_snapshot', [$this, 'ajax_get_preset_snapshot']);
         add_action('wp_ajax_mkl_pc_save_expanded_preset', [$this, 'ajax_save_expanded_preset']);
         add_action('wp_ajax_mkl_pc_delete_all_presets', [$this, 'ajax_delete_all']);
+
+        // Ensure the Configuration image meta box shows a preview even if subsizes are missing.
+        add_filter('admin_post_thumbnail_html', [$this, 'override_configuration_image_box'], 10, 2);
+
+        // Block editor and media modal often rely on attachment sizes. In CLI-created
+        // attachments, subsizes may be missing (no GD/Imagick). Inject safe fallbacks
+        // so the preview still appears in the Featured/Configuration image panel.
+        add_filter('wp_prepare_attachment_for_js', [$this, 'inject_sizes_fallback'], 10, 2);
+        add_filter('rest_prepare_attachment', [$this, 'inject_rest_sizes_fallback'], 10, 3);
+    }
+
+    /**
+     * Override the featured image box HTML for our CPT when subsizes are missing,
+     * falling back to the full image so editors still see a preview.
+     */
+    public function override_configuration_image_box($content, $post_id)
+    {
+        $post = get_post($post_id);
+        if (! $post || $post->post_type !== 'mkl_pc_configuration') {
+            return $content;
+        }
+
+        $thumb_id = get_post_thumbnail_id($post_id);
+        if (! $thumb_id) {
+            return $content;
+        }
+
+        $meta = wp_get_attachment_metadata($thumb_id);
+        $has_sizes = is_array($meta) && ! empty($meta['sizes']);
+
+        if ($has_sizes) {
+            return $content;
+        }
+
+        $url = wp_get_attachment_url($thumb_id);
+        if (! $url) {
+            return $content;
+        }
+
+        $fallback = '<p><img src="' . esc_url($url) . '" alt="" style="max-width:150px;height:auto;border:1px solid #ccd0d4;"/></p>';
+        return $fallback . $content;
+    }
+
+    /**
+     * Ensure attachment JS object has sizes for media modal/block editor previews.
+     * When CLI created the image without subsizes, provide synthetic sizes pointing to the full URL.
+     */
+    public function inject_sizes_fallback($response, $attachment)
+    {
+        if (!is_array($response)) {
+            return $response;
+        }
+
+        // Only images
+        if (empty($response['type']) || $response['type'] !== 'image') {
+            return $response;
+        }
+
+        // If sizes already present, leave as-is
+        if (!empty($response['sizes']) && is_array($response['sizes'])) {
+            return $response;
+        }
+
+        $attachment_id = isset($response['id']) ? intval($response['id']) : (isset($attachment->ID) ? intval($attachment->ID) : 0);
+        if (!$attachment_id) {
+            return $response;
+        }
+
+        $meta = wp_get_attachment_metadata($attachment_id);
+        // Limit to our generator images to avoid touching other media
+        $file_rel = is_array($meta) && !empty($meta['file']) ? (string) $meta['file'] : '';
+        if ($file_rel === '' || strpos($file_rel, 'mkl-pc-config-images/') === false) {
+            return $response;
+        }
+
+        $url = wp_get_attachment_url($attachment_id);
+        if (!$url) {
+            return $response;
+        }
+
+        $width  = is_array($meta) && !empty($meta['width']) ? intval($meta['width']) : 0;
+        $height = is_array($meta) && !empty($meta['height']) ? intval($meta['height']) : 0;
+
+        if ($width <= 0 || $height <= 0) {
+            $file_abs = get_attached_file($attachment_id);
+            if ($file_abs && file_exists($file_abs)) {
+                $size = @getimagesize($file_abs);
+                if (is_array($size) && !empty($size[0]) && !empty($size[1])) {
+                    $width = intval($size[0]);
+                    $height = intval($size[1]);
+                }
+            }
+        }
+
+        // Build minimal sizes pointing to the full image URL
+        $thumb_w = min(150, $width ?: 150);
+        $thumb_h = min(150, $height ?: 150);
+        $medium_w = min(300, $width ?: 300);
+        $medium_h = min(300, $height ?: 300);
+
+        $fallback_sizes = [
+            'thumbnail' => [
+                'url' => $url,
+                'width' => $thumb_w,
+                'height' => $thumb_h,
+                'orientation' => ($thumb_w >= $thumb_h) ? 'landscape' : 'portrait',
+            ],
+            'medium' => [
+                'url' => $url,
+                'width' => $medium_w,
+                'height' => $medium_h,
+                'orientation' => ($medium_w >= $medium_h) ? 'landscape' : 'portrait',
+            ],
+        ];
+
+        $response['sizes'] = $fallback_sizes;
+        return $response;
+    }
+
+    /**
+     * Also patch REST responses for attachments so Gutenberg uses the fallback sizes.
+     */
+    public function inject_rest_sizes_fallback($response, $post, $request)
+    {
+        if (!($response instanceof WP_REST_Response)) {
+            return $response;
+        }
+
+        $data = $response->get_data();
+        if (empty($data) || empty($data['media_type']) || $data['media_type'] !== 'image') {
+            return $response;
+        }
+
+        $details = isset($data['media_details']) && is_array($data['media_details']) ? $data['media_details'] : [];
+        $sizes   = isset($details['sizes']) ? $details['sizes'] : [];
+        if (!empty($sizes)) {
+            return $response; // sizes already present
+        }
+
+        $source_url = isset($data['source_url']) ? $data['source_url'] : '';
+        if ($source_url === '') {
+            return $response;
+        }
+
+        $file_rel = isset($details['file']) ? (string) $details['file'] : '';
+        if ($file_rel === '' || strpos($file_rel, 'mkl-pc-config-images/') === false) {
+            return $response;
+        }
+
+        $width  = isset($details['width']) ? intval($details['width']) : 0;
+        $height = isset($details['height']) ? intval($details['height']) : 0;
+        $thumb_w = min(150, $width ?: 150);
+        $thumb_h = min(150, $height ?: 150);
+        $medium_w = min(300, $width ?: 300);
+        $medium_h = min(300, $height ?: 300);
+
+        $details['sizes'] = [
+            'thumbnail' => [
+                'file' => basename($file_rel),
+                'width' => $thumb_w,
+                'height' => $thumb_h,
+                'mime_type' => isset($data['mime_type']) ? $data['mime_type'] : 'image/png',
+                'source_url' => $source_url,
+            ],
+            'medium' => [
+                'file' => basename($file_rel),
+                'width' => $medium_w,
+                'height' => $medium_h,
+                'mime_type' => isset($data['mime_type']) ? $data['mime_type'] : 'image/png',
+                'source_url' => $source_url,
+            ],
+        ];
+
+        $data['media_details'] = $details;
+        $response->set_data($data);
+        return $response;
     }
 
     /**
@@ -738,8 +917,6 @@ class MKL_PC_Preset_Generator_Admin_UI
      */
     public function ajax_begin_run()
     {
-        $lock_token = null;
-
         try {
             check_ajax_referer('mkl_pc_bulk_generator', 'nonce');
 
@@ -755,40 +932,15 @@ class MKL_PC_Preset_Generator_Admin_UI
             $requested_chunk = isset($_POST['chunk_size']) ? intval($_POST['chunk_size']) : null;
             $force_new = !empty($_POST['force_new']);
 
-            $lock_token = $this->acquire_run_lock($product_id);
-            if (! $lock_token) {
-                wp_send_json_error([
-                    'message' => __('Preparing another batch. Please retry in a moment.', 'mkl-pc-preset-generator'),
-                    'code' => 'run_busy',
-                ]);
-            }
-
-            $state = $this->get_run_state($product_id);
-
-            if ($force_new || $this->should_reset_run_state($state)) {
-                $state = $this->create_run_state($product_id, $requested_chunk);
-            } else {
-                if (!is_array($state)) {
-                    $state = $this->create_run_state($product_id, $requested_chunk);
-                }
-                if ($requested_chunk !== null && empty($state['chunk_size_locked'])) {
-                    $state['chunk_size'] = $this->normalize_batch_size($requested_chunk, $product_id);
-                    $state['chunk_size_locked'] = true;
-                }
-            }
-
-            $state['updated_at'] = time();
-
-            $this->save_run_state($product_id, $state);
-            $this->release_run_lock($product_id, $lock_token);
+            $payload = $this->run_manager->begin_run($product_id, [
+                'chunk_size' => $requested_chunk,
+                'force_new' => $force_new,
+            ]);
 
             wp_send_json_success([
-                'run' => $this->prepare_run_payload($state),
+                'run' => $payload,
             ]);
         } catch (Exception $e) {
-            if ($lock_token) {
-                $this->release_run_lock(isset($product_id) ? $product_id : 0, $lock_token);
-            }
             error_log('MKL PC Bulk Generator Begin Run Error: ' . $e->getMessage());
             wp_send_json_error(['message' => $e->getMessage()]);
         }
@@ -799,8 +951,6 @@ class MKL_PC_Preset_Generator_Admin_UI
      */
     public function ajax_cancel_run()
     {
-        $lock_token = null;
-
         try {
             check_ajax_referer('mkl_pc_bulk_generator', 'nonce');
 
@@ -815,37 +965,19 @@ class MKL_PC_Preset_Generator_Admin_UI
                 wp_send_json_error(['message' => __('Invalid cancel request.', 'mkl-pc-preset-generator')]);
             }
 
-            $lock_token = $this->acquire_run_lock($product_id);
-            if (! $lock_token) {
-                wp_send_json_error([
-                    'message' => __('Unable to cancel run at the moment. Please retry.', 'mkl-pc-preset-generator'),
-                    'code' => 'run_busy',
-                ]);
-            }
-
-            $state = $this->get_run_state($product_id);
-            if (!is_array($state) || !isset($state['run_id']) || $state['run_id'] !== $run_id) {
-                $this->release_run_lock($product_id, $lock_token);
+            $payload = $this->run_manager->cancel_run($product_id, $run_id);
+            if (! $payload) {
                 wp_send_json_error([
                     'message' => __('Run context no longer available.', 'mkl-pc-preset-generator'),
                     'code' => 'run_mismatch',
                 ]);
             }
 
-            $payload = $this->prepare_run_payload($state);
-            $payload['cancelled'] = true;
-
-            $this->clear_run_state($product_id);
-            $this->release_run_lock($product_id, $lock_token);
-
             wp_send_json_success([
                 'run' => $payload,
                 'message' => __('Generation cancelled.', 'mkl-pc-preset-generator'),
             ]);
         } catch (Exception $e) {
-            if ($lock_token) {
-                $this->release_run_lock(isset($product_id) ? $product_id : 0, $lock_token);
-            }
             error_log('MKL PC Bulk Generator Cancel Run Error: ' . $e->getMessage());
             wp_send_json_error(['message' => $e->getMessage()]);
         }
@@ -856,7 +988,6 @@ class MKL_PC_Preset_Generator_Admin_UI
      */
     public function ajax_generate_batch()
     {
-        $lock_token = null;
         $reservation_id = null;
         $assigned_offset = 0;
         $chunk_size = 0;
@@ -885,150 +1016,90 @@ class MKL_PC_Preset_Generator_Admin_UI
 
             set_time_limit(300);
 
-            $lock_token = $this->acquire_run_lock($product_id);
-            if (! $lock_token) {
-                wp_send_json_error([
-                    'message' => __('Preparing another batch. Please retry in a moment.', 'mkl-pc-preset-generator'),
-                    'code' => 'run_busy',
-                ]);
-            }
+            $reservation_info = $this->run_manager->reserve_batch($product_id, $run_id, [
+                'chunk_size' => $requested_batch,
+            ]);
 
-            $state = $this->get_run_state($product_id);
-            if (!is_array($state) || empty($state['run_id']) || $state['run_id'] !== $run_id) {
-                $this->release_run_lock($product_id, $lock_token);
+            if (!is_array($reservation_info) || 'mismatch' === $reservation_info['status']) {
                 wp_send_json_error([
                     'message' => __('Run context no longer available. Please start a new run.', 'mkl-pc-preset-generator'),
                     'code' => 'run_mismatch',
                 ]);
             }
 
-            $this->cleanup_expired_reservations($state);
-
-            if ($requested_batch > 0 && empty($state['chunk_size_locked'])) {
-                $state['chunk_size'] = $this->normalize_batch_size($requested_batch, $product_id);
-                $state['chunk_size_locked'] = true;
-            }
-
-            $chunk_size = isset($state['chunk_size'])
-                ? (int) $state['chunk_size']
-                : $this->normalize_batch_size(0, $product_id);
-
-            if ($chunk_size < 1) {
-                $chunk_size = $this->normalize_batch_size($chunk_size, $product_id);
-                $state['chunk_size'] = $chunk_size;
-            }
-
-            $reservation = $this->claim_next_reservation($state, $chunk_size, $run_id);
+            $reservation = isset($reservation_info['reservation']) ? $reservation_info['reservation'] : null;
+            $payload = isset($reservation_info['state']) ? $reservation_info['state'] : [];
 
             if (! $reservation) {
-                $payload = $this->prepare_run_payload($state);
-                $this->save_run_state($product_id, $state);
-                $this->release_run_lock($product_id, $lock_token);
+                $message = !empty($reservation_info['message'])
+                    ? $reservation_info['message']
+                    : (!empty($payload['is_complete'])
+                        ? __('Generation complete.', 'mkl-pc-preset-generator')
+                        : __('Waiting for available batches...', 'mkl-pc-preset-generator'));
 
                 wp_send_json_success([
                     'saved' => 0,
                     'skipped' => 0,
-                    'offset' => $payload['next_offset'],
-                    'total' => $payload['attempted_total'],
+                    'offset' => isset($payload['next_offset']) ? $payload['next_offset'] : 0,
+                    'total' => isset($payload['attempted_total']) ? $payload['attempted_total'] : 0,
                     'is_complete' => !empty($payload['is_complete']),
                     'progress' => 0,
-                    'total_generated' => $payload['attempted_total'],
-                    'attempted_total' => $payload['attempted_total'],
-                    'saved_total' => $payload['saved_total'],
+                    'total_generated' => isset($payload['attempted_total']) ? $payload['attempted_total'] : 0,
+                    'attempted_total' => isset($payload['attempted_total']) ? $payload['attempted_total'] : 0,
+                    'saved_total' => isset($payload['saved_total']) ? $payload['saved_total'] : 0,
                     'run' => $payload,
-                    'message' => !empty($payload['is_complete'])
-                        ? __('Generation complete.', 'mkl-pc-preset-generator')
-                        : __('Waiting for available batches...', 'mkl-pc-preset-generator'),
+                    'message' => $message,
                     'attempted_batch' => 0,
                     'saved_batch' => 0,
                     'valid_combinations' => [],
+                    'chunk_size' => isset($payload['chunk_size']) ? $payload['chunk_size'] : 0,
                 ]);
             }
 
             $reservation_id = $reservation['id'];
             $assigned_offset = isset($reservation['offset']) ? (int) $reservation['offset'] : 0;
-            $chunk_size = isset($reservation['limit']) ? (int) $reservation['limit'] : $chunk_size;
+            $chunk_size = isset($reservation['limit']) ? (int) $reservation['limit'] : (isset($payload['chunk_size']) ? (int) $payload['chunk_size'] : 0);
 
-            $this->save_run_state($product_id, $state);
-            $this->release_run_lock($product_id, $lock_token);
-            $lock_token = null;
+            $worker = new MKL_PC_Preset_Bulk_Worker($product_id, [
+                'save_presets' => false,
+                'expand_for_ui' => true,
+            ]);
 
-            $smart_generator = new MKL_PC_Smart_Combination_Generator($product_id);
-            $saver = new MKL_PC_Preset_Saver($product_id);
-            $config_builder = new MKL_PC_Configuration_Builder($product_id);
+            $worker_result = $worker->process($assigned_offset, $chunk_size, [
+                'run_id' => $run_id,
+                'reservation_id' => $reservation_id,
+            ]);
 
-            $batch = $smart_generator->generate_batch($assigned_offset, $chunk_size);
+            $consumed = isset($worker_result['attempted']) ? (int) $worker_result['attempted'] : 0;
+            $saved = isset($worker_result['prepared']) ? (int) $worker_result['prepared'] : 0;
+            $skipped = isset($worker_result['skipped']) ? (int) $worker_result['skipped'] : 0;
+            $valid_combinations = isset($worker_result['valid_combinations']) ? (array) $worker_result['valid_combinations'] : [];
 
-            $saved = 0;
-            $skipped = 0;
-            $valid_combinations = [];
-            $consumed = 0;
+            $updated_payload = $this->run_manager->complete_reservation($product_id, $run_id, $reservation_id, [
+                'offset' => $assigned_offset,
+                'limit' => $chunk_size,
+                'attempted' => $consumed,
+                'saved' => $saved,
+                'skipped' => $skipped,
+            ]);
 
-            $core_layers_required = apply_filters('mkl_pc_preset_generator_core_layers', ['Size', 'Colour', 'Worktop'], $product_id);
-
-            foreach ($batch as $combination) {
-                $consumed++;
-
-                $evaluation = $this->evaluate_core_layers($combination, $core_layers_required);
-                if (! $evaluation['valid']) {
-                    $skipped++;
-                    if (!empty($evaluation['missing'])) {
-                        error_log('Smart Generator: skipped combination missing core layers (' . implode(', ', $evaluation['missing']) . ')');
-                    }
-                    continue;
-                }
-
-                try {
-                    $expanded_configuration = $config_builder->build_complete_configuration($combination);
-                } catch (Exception $e) {
-                    error_log('Bulk Generator: Failed to build expanded configuration - ' . $e->getMessage());
-                    $expanded_configuration = [];
-                }
-
-                $valid_combinations[] = [
-                    'base_combination' => $combination,
-                    'preset_name' => $saver->generate_preset_name($combination, []),
-                    'expanded_configuration' => $expanded_configuration,
-                ];
-
-                $saved++;
+            if ($updated_payload) {
+                $payload = $updated_payload;
+            } elseif (!is_array($payload)) {
+                $payload = [];
             }
-
-            $state_after = null;
-            $lock_token = $this->acquire_run_lock($product_id);
-            if ($lock_token) {
-                $state_after = $this->get_run_state($product_id);
-                if (is_array($state_after) && isset($state_after['run_id']) && $state_after['run_id'] === $run_id) {
-                    $this->cleanup_expired_reservations($state_after);
-                    $this->finalize_reservation(
-                        $state_after,
-                        $reservation_id,
-                        $assigned_offset,
-                        $consumed,
-                        $chunk_size,
-                        ['skipped' => $skipped]
-                    );
-                    $this->save_run_state($product_id, $state_after);
-                }
-                $this->release_run_lock($product_id, $lock_token);
-                $lock_token = null;
-            }
-
-            $payload = $state_after
-                ? $this->prepare_run_payload($state_after)
-                : $this->prepare_run_payload($state);
 
             $response = [
                 'saved' => 0,
                 'skipped' => $skipped,
-                'offset' => $payload['next_offset'],
+                'offset' => isset($payload['next_offset']) ? $payload['next_offset'] : 0,
                 'claimed_offset' => $assigned_offset,
-                'total' => $payload['attempted_total'],
+                'total' => isset($payload['attempted_total']) ? $payload['attempted_total'] : 0,
                 'is_complete' => !empty($payload['is_complete']),
                 'progress' => 0,
-                'total_generated' => $payload['attempted_total'],
-                'attempted_total' => $payload['attempted_total'],
-                'saved_total' => $payload['saved_total'],
+                'total_generated' => isset($payload['attempted_total']) ? $payload['attempted_total'] : 0,
+                'attempted_total' => isset($payload['attempted_total']) ? $payload['attempted_total'] : 0,
+                'saved_total' => isset($payload['saved_total']) ? $payload['saved_total'] : 0,
                 'safety_limit' => 0,
                 'target_total' => 0,
                 'run_limit' => 0,
@@ -1044,20 +1115,8 @@ class MKL_PC_Preset_Generator_Admin_UI
 
             wp_send_json_success($response);
         } catch (Exception $e) {
-            if ($lock_token) {
-                $this->release_run_lock($product_id, $lock_token);
-            }
-
             if ($reservation_id && $product_id) {
-                $lock_for_release = $this->acquire_run_lock($product_id);
-                if ($lock_for_release) {
-                    $state = $this->get_run_state($product_id);
-                    if (is_array($state) && (!isset($state['run_id']) || empty($run_id) || $state['run_id'] === $run_id)) {
-                        $this->release_reservation($state, $reservation_id);
-                        $this->save_run_state($product_id, $state);
-                    }
-                    $this->release_run_lock($product_id, $lock_for_release);
-                }
+                $this->run_manager->release_reservation($product_id, $run_id, $reservation_id);
             }
 
             error_log('MKL PC Bulk Generator Batch Error: ' . $e->getMessage() . ' in ' . $e->getFile() . ':' . $e->getLine());
@@ -1218,7 +1277,7 @@ class MKL_PC_Preset_Generator_Admin_UI
         $saver = new MKL_PC_Preset_Saver($product_id);
         $deleted = $saver->delete_all_presets();
 
-        $this->clear_run_state($product_id);
+        $this->run_manager->clear_state($product_id);
 
         wp_send_json_success([
             'deleted' => $deleted,
@@ -1357,38 +1416,6 @@ class MKL_PC_Preset_Generator_Admin_UI
         return $existing_id ? intval($existing_id) : 0;
     }
 
-    private function evaluate_core_layers(array $combination, array $core_layers_required)
-    {
-        $core_selections = array_fill_keys($core_layers_required, false);
-        $seen_layers = [];
-
-        foreach ($combination as $choice) {
-            if (isset($core_selections[$choice['layer_name']])) {
-                if ($choice['choice_id'] !== null && $choice['choice_name'] !== 'None') {
-                    $core_selections[$choice['layer_name']] = true;
-                }
-            }
-            if (isset($choice['layer_name'])) {
-                $seen_layers[$choice['layer_name']] = true;
-            }
-        }
-
-        foreach ($core_selections as $layer_name => $is_selected) {
-            if (!isset($seen_layers[$layer_name])) {
-                unset($core_selections[$layer_name]);
-            }
-        }
-
-        $missing = array_keys(array_filter($core_selections, function ($selected) {
-            return ! $selected;
-        }));
-
-        return [
-            'valid' => empty($missing),
-            'missing' => $missing,
-        ];
-    }
-
     private function wilson_interval($successes, $trials, $confidence = 0.95)
     {
         if ($trials <= 0) {
@@ -1428,421 +1455,6 @@ class MKL_PC_Preset_Generator_Admin_UI
             default:
                 return 1.96;
         }
-    }
-
-    /**
-     * Retrieve a normalised batch size based on project filters.
-     *
-     * @param int $requested
-     * @param int $product_id
-     * @return int
-     */
-    private function normalize_batch_size($requested, $product_id)
-    {
-        $default = (int) apply_filters('mkl_pc_preset_generator_batch_size', 50, $product_id);
-        $max = (int) apply_filters('mkl_pc_preset_generator_max_batch_size', 250, $product_id);
-
-        $batch_size = (int) $requested;
-        if ($batch_size < 1) {
-            $batch_size = $default;
-        }
-
-        if ($max > 0) {
-            $batch_size = min($batch_size, $max);
-        }
-
-        return max(1, $batch_size);
-    }
-
-    /**
-     * Option key helper for run state storage.
-     */
-    private function get_run_state_option_key($product_id)
-    {
-        return 'mkl_pc_bulk_state_' . $product_id;
-    }
-
-    /**
-     * Option key helper for run locking.
-     */
-    private function get_run_lock_option_key($product_id)
-    {
-        return 'mkl_pc_bulk_lock_' . $product_id;
-    }
-
-    /**
-     * Acquire an advisory lock for a product run.
-     *
-     * @param int $product_id
-     * @param int $timeout Seconds to wait before giving up.
-     * @return string|false Lock token on success, false when busy.
-     */
-    private function acquire_run_lock($product_id, $timeout = 5)
-    {
-        $lock_key = $this->get_run_lock_option_key($product_id);
-        $token = uniqid('lock_', true);
-        $attempt_until = time() + max(1, (int) $timeout);
-        $lock_ttl = 10; // seconds
-
-        do {
-            $existing = get_option($lock_key);
-            if (is_array($existing) && isset($existing['token'], $existing['expires'])) {
-                if ((int) $existing['expires'] < time()) {
-                    delete_option($lock_key);
-                    $existing = false;
-                }
-            } elseif (!empty($existing)) {
-                // Legacy value, remove it.
-                delete_option($lock_key);
-                $existing = false;
-            }
-
-            if (false === $existing) {
-                $stored = [
-                    'token' => $token,
-                    'expires' => time() + $lock_ttl,
-                ];
-                if (add_option($lock_key, $stored, '', 'no')) {
-                    return $token;
-                }
-            }
-
-            usleep(150000); // 150ms backoff
-        } while (time() < $attempt_until);
-
-        return false;
-    }
-
-    /**
-     * Release a previously acquired lock.
-     *
-     * @param int    $product_id
-     * @param string $token
-     */
-    private function release_run_lock($product_id, $token)
-    {
-        if (!$token) {
-            return;
-        }
-
-        $lock_key = $this->get_run_lock_option_key($product_id);
-        $existing = get_option($lock_key);
-        if (is_array($existing) && isset($existing['token']) && $existing['token'] === $token) {
-            delete_option($lock_key);
-        }
-    }
-
-    /**
-     * Load run state for a product.
-     *
-     * @param int $product_id
-     * @return array|null
-     */
-    private function get_run_state($product_id)
-    {
-        $state = get_option($this->get_run_state_option_key($product_id), null);
-        return is_array($state) ? $state : null;
-    }
-
-    /**
-     * Persist run state.
-     *
-     * @param int   $product_id
-     * @param array $state
-     * @return void
-     */
-    private function save_run_state($product_id, array $state)
-    {
-        update_option($this->get_run_state_option_key($product_id), $state, false);
-    }
-
-    /**
-     * Remove stored run state and associated lock (if any).
-     *
-     * @param int $product_id
-     * @return void
-     */
-    private function clear_run_state($product_id)
-    {
-        delete_option($this->get_run_state_option_key($product_id));
-        delete_option($this->get_run_lock_option_key($product_id));
-        delete_option('mkl_pc_bulk_offset_' . $product_id);
-    }
-
-    /**
-     * Determine whether the stored state should be reset.
-     *
-     * @param array|null $state
-     * @return bool
-     */
-    private function should_reset_run_state($state)
-    {
-        if (!is_array($state) || empty($state['run_id'])) {
-            return true;
-        }
-
-        if (!empty($state['is_complete']) || !empty($state['cancelled'])) {
-            return true;
-        }
-
-        $updated_at = isset($state['updated_at']) ? (int) $state['updated_at'] : 0;
-        $ttl = isset($state['reservation_ttl']) ? (int) $state['reservation_ttl'] : 120;
-        $idle_limit = max($ttl * 4, 600);
-
-        if ($updated_at > 0 && (time() - $updated_at) > $idle_limit) {
-            return true;
-        }
-
-        return false;
-    }
-
-    /**
-     * Initialise a fresh run state.
-     *
-     * @param int      $product_id
-     * @param int|null $requested_chunk_size
-     * @return array
-     */
-    private function create_run_state($product_id, $requested_chunk_size = null)
-    {
-        $chunk_size = $this->normalize_batch_size(
-            $requested_chunk_size !== null ? (int) $requested_chunk_size : 0,
-            $product_id
-        );
-
-        $reservation_ttl = (int) apply_filters(
-            'mkl_pc_preset_generator_reservation_ttl',
-            120,
-            $product_id
-        );
-
-        $state = [
-            'version' => 1,
-            'run_id' => wp_generate_uuid4(),
-            'product_id' => $product_id,
-            'chunk_size' => $chunk_size,
-            'next_offset' => 0,
-            'attempted_total' => 0,
-            'saved_total' => 0,
-            'started_at' => time(),
-            'updated_at' => time(),
-            'reservations' => [],
-            'pending_offsets' => [],
-            'reservation_ttl' => max(30, $reservation_ttl),
-            'total_batches' => 0,
-            'completed_chunks' => 0,
-            'skipped_total' => 0,
-            'is_complete' => false,
-            'is_exhausted' => false,
-        ];
-
-        return $state;
-    }
-
-    /**
-     * Prepare run payload for frontend consumption.
-     *
-     * @param array $state
-     * @return array
-     */
-    private function prepare_run_payload(array $state)
-    {
-        return [
-            'run_id' => isset($state['run_id']) ? $state['run_id'] : '',
-            'chunk_size' => isset($state['chunk_size']) ? (int) $state['chunk_size'] : 0,
-            'next_offset' => isset($state['next_offset']) ? (int) $state['next_offset'] : 0,
-            'attempted_total' => isset($state['attempted_total']) ? (int) $state['attempted_total'] : 0,
-            'saved_total' => isset($state['saved_total']) ? (int) $state['saved_total'] : 0,
-            'pending' => isset($state['pending_offsets']) ? count((array) $state['pending_offsets']) : 0,
-            'reservations' => isset($state['reservations']) ? count((array) $state['reservations']) : 0,
-            'started_at' => isset($state['started_at']) ? (int) $state['started_at'] : 0,
-            'updated_at' => isset($state['updated_at']) ? (int) $state['updated_at'] : 0,
-            'is_complete' => !empty($state['is_complete']),
-            'is_exhausted' => !empty($state['is_exhausted']),
-            'reservation_ttl' => isset($state['reservation_ttl']) ? (int) $state['reservation_ttl'] : 0,
-            'skipped_total' => isset($state['skipped_total']) ? (int) $state['skipped_total'] : 0,
-        ];
-    }
-
-    /**
-     * Cleanup expired reservations and recycle their offsets.
-     *
-     * @param array $state
-     * @return void
-     */
-    private function cleanup_expired_reservations(array &$state)
-    {
-        if (empty($state['reservations']) || !is_array($state['reservations'])) {
-            $state['reservations'] = [];
-            return;
-        }
-
-        $ttl = isset($state['reservation_ttl']) ? (int) $state['reservation_ttl'] : 120;
-        $now = time();
-        $pending = isset($state['pending_offsets']) && is_array($state['pending_offsets'])
-            ? $state['pending_offsets']
-            : [];
-
-        foreach ($state['reservations'] as $id => $reservation) {
-            $started_at = isset($reservation['started_at']) ? (int) $reservation['started_at'] : 0;
-            if ($started_at > 0 && ($now - $started_at) > $ttl) {
-                $offset = isset($reservation['offset']) ? (int) $reservation['offset'] : 0;
-                $limit = isset($reservation['limit']) ? (int) $reservation['limit'] : 0;
-
-                if ($offset >= 0) {
-                    $pending[] = $offset;
-                }
-
-                unset($state['reservations'][$id]);
-
-                error_log(sprintf(
-                    'Bulk Generator: released expired reservation %s (offset %d, limit %d)',
-                    $id,
-                    $offset,
-                    $limit
-                ));
-            }
-        }
-
-        if (!empty($pending)) {
-            $pending = array_values(array_unique(array_map('intval', $pending)));
-            sort($pending, SORT_NUMERIC);
-            $state['pending_offsets'] = $pending;
-        } else {
-            $state['pending_offsets'] = [];
-        }
-    }
-
-    /**
-     * Reserve the next offset segment for processing.
-     *
-     * @param array  $state
-     * @param int    $chunk_size
-     * @param string $run_id
-     * @return array|null
-     */
-    private function claim_next_reservation(array &$state, $chunk_size, $run_id)
-    {
-        $chunk_size = max(1, (int) $chunk_size);
-        $reservation_id = uniqid('res_', true);
-
-        if (!isset($state['pending_offsets']) || !is_array($state['pending_offsets'])) {
-            $state['pending_offsets'] = [];
-        }
-
-        $offset = null;
-        if (!empty($state['pending_offsets'])) {
-            sort($state['pending_offsets'], SORT_NUMERIC);
-            $offset = array_shift($state['pending_offsets']);
-        }
-
-        if ($offset === null) {
-            $offset = isset($state['next_offset']) ? (int) $state['next_offset'] : 0;
-            $state['next_offset'] = $offset + $chunk_size;
-        }
-
-        if (!isset($state['reservations']) || !is_array($state['reservations'])) {
-            $state['reservations'] = [];
-        }
-
-        $state['reservations'][$reservation_id] = [
-            'offset' => $offset,
-            'limit' => $chunk_size,
-            'run_id' => $run_id,
-            'started_at' => time(),
-        ];
-
-        return [
-            'id' => $reservation_id,
-            'offset' => $offset,
-            'limit' => $chunk_size,
-        ];
-    }
-
-    /**
-     * Finalise a reservation after successful processing.
-     *
-     * @param array  $state
-     * @param string $reservation_id
-     * @param int    $offset
-     * @param int    $produced
-     * @param int    $limit
-     * @param array  $meta
-     * @return void
-     */
-    private function finalize_reservation(array &$state, $reservation_id, $offset, $produced, $limit, array $meta = [])
-    {
-        if (isset($state['reservations'][$reservation_id])) {
-            unset($state['reservations'][$reservation_id]);
-        }
-
-        $state['attempted_total'] = isset($state['attempted_total'])
-            ? (int) $state['attempted_total'] + max(0, (int) $produced)
-            : max(0, (int) $produced);
-
-        $state['total_batches'] = isset($state['total_batches'])
-            ? (int) $state['total_batches'] + 1
-            : 1;
-
-        $state['completed_chunks'] = isset($state['completed_chunks'])
-            ? (int) $state['completed_chunks'] + 1
-            : 1;
-
-        if (isset($meta['skipped'])) {
-            $state['skipped_total'] = isset($state['skipped_total'])
-                ? (int) $state['skipped_total'] + max(0, (int) $meta['skipped'])
-                : max(0, (int) $meta['skipped']);
-        }
-
-        if (isset($meta['saved'])) {
-            $state['saved_total'] = isset($state['saved_total'])
-                ? (int) $state['saved_total'] + max(0, (int) $meta['saved'])
-                : max(0, (int) $meta['saved']);
-        }
-
-        $state['updated_at'] = time();
-
-        if ((int) $produced < (int) $limit) {
-            $state['is_exhausted'] = true;
-        }
-
-        if (
-            empty($state['reservations']) &&
-            empty($state['pending_offsets']) &&
-            (!empty($state['is_exhausted']) || (int) $produced === 0)
-        ) {
-            $state['is_complete'] = true;
-        }
-    }
-
-    /**
-     * Release a reservation and recycle the offset.
-     *
-     * @param array  $state
-     * @param string $reservation_id
-     * @return void
-     */
-    private function release_reservation(array &$state, $reservation_id)
-    {
-        if (!isset($state['reservations'][$reservation_id])) {
-            return;
-        }
-
-        $reservation = $state['reservations'][$reservation_id];
-        unset($state['reservations'][$reservation_id]);
-
-        if (!isset($state['pending_offsets']) || !is_array($state['pending_offsets'])) {
-            $state['pending_offsets'] = [];
-        }
-
-        $offset = isset($reservation['offset']) ? (int) $reservation['offset'] : null;
-        if ($offset !== null) {
-            $state['pending_offsets'][] = $offset;
-            $state['pending_offsets'] = array_values(array_unique(array_map('intval', $state['pending_offsets'])));
-            sort($state['pending_offsets'], SORT_NUMERIC);
-        }
-
-        $state['updated_at'] = time();
     }
 
     /**
