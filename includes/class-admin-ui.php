@@ -1121,6 +1121,10 @@ class MKL_PC_Preset_Generator_Admin_UI
         }
 
         error_log("Saving expanded preset: $preset_name with " . count($configuration) . " layers");
+        
+        // Run diagnostics on the configuration
+        $diagnostic_report = MKL_PC_Preset_Image_Diagnostics::analyze_configuration($configuration, 0);
+        MKL_PC_Preset_Image_Diagnostics::log_report($diagnostic_report);
 
         // Save directly using the Configuration class (bypass our saver's combination-to-config conversion)
         try {

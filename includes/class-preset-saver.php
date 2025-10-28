@@ -123,6 +123,11 @@ class MKL_PC_Preset_Saver
         // (Frontend would normally do this via AJAX, but we're on the backend)
         if (isset($saved['save_image_async']) && $saved['save_image_async']) {
             error_log("Triggering image generation for preset #$preset_id");
+            
+            // Run diagnostics on the configuration
+            $diagnostic_report = MKL_PC_Preset_Image_Diagnostics::analyze_configuration($configuration_data, $preset_id);
+            MKL_PC_Preset_Image_Diagnostics::log_report($diagnostic_report);
+            
             error_log("Preset content type: " . gettype($preset->content));
             error_log("Preset content sample: " . substr(print_r($preset->content, true), 0, 500));
             
