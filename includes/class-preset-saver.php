@@ -123,16 +123,15 @@ class MKL_PC_Preset_Saver
         // (Frontend would normally do this via AJAX, but we're on the backend)
         if (isset($saved['save_image_async']) && $saved['save_image_async']) {
             error_log("Triggering image generation for preset #$preset_id");
-            try {
-                $image_id = $preset->save_image($preset->content, $preset_id);
-                if ($image_id && !is_wp_error($image_id)) {
-                    error_log("Successfully generated image #$image_id for preset #$preset_id");
-                } else {
-                    error_log("Image generation returned: " . print_r($image_id, true));
-                }
-            } catch (Exception $e) {
-                error_log("Image generation failed: " . $e->getMessage());
-                // Don't fail the whole preset save if image generation fails
+            
+            // Use our image generator wrapper for better error handling and diagnostics
+            $image_result = MKL_PC_Preset_Image_Generator::generate_image($preset_id, $content_string);
+            
+            if (is_wp_error($image_result)) {
+                error_log("Image generation failed: " . $image_result->get_error_message());
+                // Don't fail the preset save if image generation fails
+            } else {
+                error_log("Image generation successful, attachment ID: $image_result");
             }
         }
 
