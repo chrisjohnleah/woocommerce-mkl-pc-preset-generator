@@ -88,7 +88,9 @@ class MKL_PC_Configuration_Builder
             $choices_by_layer[$layer_id][] = $choice;
         }
 
-        $state = $this->compute_visibility_state($selections_by_layer);
+        // Stabilize selection map using conditional logic so dependent
+        // visual layers and forced selections propagate like the frontend
+        list($state, $selections_by_layer) = $this->stabilize_selection($selections_by_layer, $selection_names);
 
         // Build complete configuration by processing all layers
         $complete_config = [];
@@ -180,17 +182,17 @@ class MKL_PC_Configuration_Builder
                 }
 
                 $auto_choice_id = $this->normalize_choice_id($auto_choice);
-                $auto_image_id = $auto_choice_id !== null ? $this->get_choice_image_id($auto_choice) : 0;
                 $visual_order = isset($auto_choice['order']) ? intval($auto_choice['order']) : $layer_order;
                 $visual_image_order = isset($auto_choice['image_order']) ? intval($auto_choice['image_order']) : $layer_image_order;
 
+                // Treat this as an actual user selection so downstream visual stacks follow
                 $complete_config[] = [
-                    'is_choice' => false,
+                    'is_choice' => true,
                     'layer_id' => $layer_id,
                     'choice_id' => $auto_choice_id,
                     'angle_id' => 1,
                     'layer_name' => $layer_name,
-                    'image' => $auto_image_id,
+                    'image' => '',
                     'order' => $visual_order,
                     'image_order' => $visual_image_order,
                     'name' => isset($auto_choice['name']) ? $auto_choice['name'] : '',
@@ -229,7 +231,7 @@ class MKL_PC_Configuration_Builder
                     continue;
                 }
 
-                if (! $this->is_choice_visible($state['choices'], $layer_id, $choice_id)) {
+                if (! $this->is_choice_allowed($state['choices'], $layer_id, $choice_id)) {
                     continue;
                 }
 
@@ -268,7 +270,125 @@ class MKL_PC_Configuration_Builder
             }
         }
 
+        // Prune obviously incompatible visual groups (e.g. size-specific stacks)
+        $complete_config = $this->prune_visual_layers_by_size($complete_config, $selection_names);
+
         return $this->normalize_configuration_order($complete_config);
+    }
+
+    /**
+     * Iteratively apply conditions to propagate forced/synced selections, until stable.
+     *
+     * @param array $selection_map layer_id => [choice_id, ...] (user selections)
+     * @param array &$selection_names layer_id => [choice_id => label]
+     * @return array{array,array} [state, stabilized_selection_map]
+     */
+    private function stabilize_selection(array $selection_map, array &$selection_names)
+    {
+        $max_passes = 6;
+        for ($i = 0; $i < $max_passes; $i++) {
+            $changed = false;
+            $state = $this->compute_visibility_state($selection_map);
+
+            // Enforce forced selections
+            foreach ($state['layers'] as $lid => $lstate) {
+                if (isset($lstate['forced_choice'])) {
+                    $forced = $lstate['forced_choice'];
+                    if (!isset($selection_map[$lid]) || !in_array($forced, $selection_map[$lid], true)) {
+                        $selection_map[$lid][] = $forced;
+                        // Label for name debugging/building
+                        if (isset($this->choice_map[$lid][$forced]['name'])) {
+                            $selection_names[$lid][$forced] = $this->choice_map[$lid][$forced]['name'];
+                        }
+                        $changed = true;
+                    }
+                }
+            }
+
+            // Propagate sync selections from source layers
+            foreach ($state['layers'] as $lid => $lstate) {
+                if (!empty($lstate['sync_source'])) {
+                    $src = (int) $lstate['sync_source'];
+                    if (isset($selection_map[$src])) {
+                        $src_choices = $this->get_layer_choices($src);
+                        $src_index = $this->get_selected_choice_index($src, $selection_map, $src_choices);
+                        $matched_cid = null;
+                        if ($src_index !== null) {
+                            $target_choices = $this->get_layer_choices($lid);
+                            if (isset($target_choices[$src_index])) {
+                                $cand = $target_choices[$src_index];
+                                $cid = $this->normalize_choice_id($cand);
+                                if ($cid !== null && $this->is_choice_allowed($state['choices'], $lid, $cid)) {
+                                    $matched_cid = $cid;
+                                    if (!isset($selection_map[$lid]) || !in_array($cid, $selection_map[$lid], true)) {
+                                        $selection_map[$lid][] = $cid;
+                                        if (isset($cand['name'])) {
+                                            $selection_names[$lid][$cid] = $cand['name'];
+                                        }
+                                        $changed = true;
+                                    }
+                                }
+                            }
+                        }
+                        if ($matched_cid === null) {
+                            foreach ($selection_map[$src] as $src_choice) {
+                                if ($src_choice === null) continue;
+                                $src_label = isset($selection_names[$src][$src_choice]) ? $selection_names[$src][$src_choice] : null;
+                                $candidate = $this->match_choice($lid, $src_choice, $src_label, $state['choices']);
+                                if ($candidate) {
+                                    $cid = $this->normalize_choice_id($candidate);
+                                    if ($cid !== null) {
+                                        if (!isset($selection_map[$lid]) || !in_array($cid, $selection_map[$lid], true)) {
+                                            $selection_map[$lid][] = $cid;
+                                            if (isset($candidate['name'])) {
+                                                $selection_names[$lid][$cid] = $candidate['name'];
+                                            }
+                                            $changed = true;
+                                        }
+                                        break;
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+        // Optional: for layers that are visible and have only one allowed choice,
+        // add it to the map to unlock downstream conditions.
+        foreach ($this->choice_map as $lid => $choices) {
+            if (isset($state['layers'][$lid]) && empty($state['layers'][$lid]['visible'])) {
+                continue;
+            }
+
+                // Skip if already selected by user
+                if (isset($selection_map[$lid]) && !empty($selection_map[$lid])) {
+                    continue;
+                }
+
+            $visible_candidates = [];
+            foreach ($choices as $cid => $choice) {
+                    if ($this->is_choice_allowed($state['choices'], $lid, $cid)) {
+                        $visible_candidates[] = $cid;
+                    }
+            }
+            if (count($visible_candidates) === 1) {
+                $cid = $visible_candidates[0];
+                    $selection_map[$lid] = [$cid];
+                    if (isset($choices[$cid]['name'])) {
+                        $selection_names[$lid][$cid] = $choices[$cid]['name'];
+                    }
+                    $changed = true;
+                }
+            }
+
+            if (!$changed) {
+                return [$state, $selection_map];
+            }
+        }
+
+        // Final state after max passes
+        return [$this->compute_visibility_state($selection_map), $selection_map];
     }
 
     /**
@@ -337,6 +457,78 @@ class MKL_PC_Configuration_Builder
     }
 
     /**
+     * Remove visual layers that do not match the selected Size family.
+     *
+     * Many datasets encode size-specific visual stacks as separate layers
+     * (e.g. "Visual - 1200mm Frame", "Visual - 1500mm Worktops"). When the
+     * Size choice is known, only one size family should contribute pixels.
+     *
+     * This is a conservative post-process that only drops visual items whose
+     * layer_name starts with "Visual - " and contains a size token that
+     * clearly does not match the selected Size, to prevent cross-size blends.
+     */
+    private function prune_visual_layers_by_size(array $configuration, array $selection_names)
+    {
+        // Find the Size layer id in this product
+        $size_layer_id = null;
+        foreach ($this->layer_map as $lid => $layer) {
+            if (isset($layer['name']) && is_string($layer['name']) && strcasecmp($layer['name'], 'Size') === 0) {
+                $size_layer_id = (int) $lid;
+                break;
+            }
+        }
+
+        if (! $size_layer_id) {
+            return $configuration;
+        }
+
+        // Get selected Size label (if any)
+        $selected_size_label = null;
+        if (isset($selection_names[$size_layer_id]) && is_array($selection_names[$size_layer_id])) {
+            // Pick the first entry
+            foreach ($selection_names[$size_layer_id] as $cid => $label) {
+                if (! empty($label)) { $selected_size_label = $label; break; }
+            }
+        }
+
+        if (! $selected_size_label) {
+            return $configuration;
+        }
+
+        // Extract a primary size token (e.g. 1200 => '1200mm')
+        $size_token = null;
+        if (preg_match('/(\d{3,4})\s*[xX]/', $selected_size_label, $m)) {
+            $size_token = $m[1] . 'mm';
+        } elseif (preg_match('/(\d{3,4})\s*mm/i', $selected_size_label, $m)) {
+            $size_token = strtolower($m[1] . 'mm');
+        }
+
+        if (! $size_token) {
+            return $configuration;
+        }
+
+        $filtered = [];
+        foreach ($configuration as $entry) {
+            $ln = is_array($entry) && isset($entry['layer_name']) ? (string) $entry['layer_name'] : '';
+            $is_visual = (stripos($ln, 'Visual -') === 0);
+            if ($is_visual) {
+                // If the layer_name contains an explicit size mark and it does not
+                // match the selected size, drop it.
+                if (preg_match('/\b(\d{3,4})mm\b/i', $ln, $mm)) {
+                    $ln_size = strtolower($mm[1] . 'mm');
+                    if ($ln_size !== strtolower($size_token)) {
+                        // Skip this mismatched visual item
+                        continue;
+                    }
+                }
+            }
+            $filtered[] = $entry;
+        }
+
+        return apply_filters('mkl_pc_preset_builder_prune_visual_by_size', $filtered, $configuration, $selected_size_label, $this->product_id);
+    }
+
+    /**
      * Determine default layer visibility.
      */
     private function default_layer_visible($layer)
@@ -385,6 +577,7 @@ class MKL_PC_Configuration_Builder
 
                 $choice_state[$layer_id][$choice_id] = [
                     'visible' => $this->default_choice_visible($choice),
+                    'enabled' => true,
                 ];
             }
         }
@@ -428,6 +621,7 @@ class MKL_PC_Configuration_Builder
                     if (! isset($choice_state[$layer_id][$choice_id])) {
                         $choice_state[$layer_id][$choice_id] = [
                             'visible' => $this->default_choice_visible(null),
+                            'enabled' => true,
                         ];
                     }
 
@@ -435,6 +629,10 @@ class MKL_PC_Configuration_Builder
                         $choice_state[$layer_id][$choice_id]['visible'] = true;
                     } elseif ('hide' === $action_name) {
                         $choice_state[$layer_id][$choice_id]['visible'] = false;
+                    } elseif ('enable' === $action_name) {
+                        $choice_state[$layer_id][$choice_id]['enabled'] = true;
+                    } elseif ('disable' === $action_name) {
+                        $choice_state[$layer_id][$choice_id]['enabled'] = false;
                     } elseif ('select' === $action_name) {
                         $layer_state[$layer_id]['forced_choice'] = $choice_id;
                     } elseif ('reset' === $action_name) {
@@ -459,6 +657,17 @@ class MKL_PC_Configuration_Builder
             return ! empty($choice_state[$layer_id][$choice_id]['visible']);
         }
 
+        return true;
+    }
+
+    private function is_choice_allowed(array $choice_state, $layer_id, $choice_id)
+    {
+        if (! $this->is_choice_visible($choice_state, $layer_id, $choice_id)) {
+            return false;
+        }
+        if (isset($choice_state[$layer_id][$choice_id]['enabled']) && $choice_state[$layer_id][$choice_id]['enabled'] === false) {
+            return false;
+        }
         return true;
     }
 
@@ -492,9 +701,9 @@ class MKL_PC_Configuration_Builder
             return null;
         }
 
-        // Direct match by choice ID first.
+        // Direct match by choice ID first (must be allowed)
         if ($choice_id !== null && isset($choices[$choice_id])) {
-            if ($layer_state === null || $this->is_choice_visible($choice_state, $layer_id, $choice_id)) {
+            if ($layer_state === null || $this->is_choice_allowed($choice_state, $layer_id, $choice_id)) {
                 return $choices[$choice_id];
             }
         }
@@ -513,7 +722,7 @@ class MKL_PC_Configuration_Builder
                     : null;
 
                 if ($candidate_label !== null && $candidate_label === $normalized_target) {
-                    if ($layer_state === null || $this->is_choice_visible($choice_state, $layer_id, $candidate_id)) {
+                    if ($layer_state === null || $this->is_choice_allowed($choice_state, $layer_id, $candidate_id)) {
                         return $candidate;
                     }
                 }
@@ -524,7 +733,7 @@ class MKL_PC_Configuration_Builder
         if (is_array($layer_state) && isset($layer_state['forced_choice'])) {
             $forced_id = $layer_state['forced_choice'];
             if ($forced_id !== null && isset($choices[$forced_id])) {
-                if ($this->is_choice_visible($choice_state, $layer_id, $forced_id)) {
+                if ($this->is_choice_allowed($choice_state, $layer_id, $forced_id)) {
                     return $choices[$forced_id];
                 }
             }
@@ -544,7 +753,7 @@ class MKL_PC_Configuration_Builder
                 continue;
             }
 
-            if ($layer_state !== null && ! $this->is_choice_visible($choice_state, $layer_id, $candidate_id)) {
+            if ($layer_state !== null && ! $this->is_choice_allowed($choice_state, $layer_id, $candidate_id)) {
                 continue;
             }
 
@@ -596,24 +805,30 @@ class MKL_PC_Configuration_Builder
      */
     private function should_auto_select_layer($layer_id, array $layer_state)
     {
+        // If the layer is not visible, never auto-select
         if (empty($layer_state['visible'])) {
             return false;
         }
 
+        // If logic explicitly forces or syncs this layer, we should auto-select
         if (! empty($layer_state['forced_choice']) || ! empty($layer_state['sync_source'])) {
             return true;
         }
 
+        // If the layer (or its ancestors) are "visual"/hidden in UI, we should still auto-pick
         if (! empty($this->layer_hidden_map[$layer_id])) {
             return true;
         }
 
+        // If this layer has a parent with choices (common for dependent stacks), auto-pick
         $parent_id = $this->resolve_layer_parent($layer_id);
         if ($parent_id && ! empty($this->choice_map[$parent_id])) {
             return true;
         }
 
-        return false;
+        // General case: when visible and not explicitly chosen by the user, auto-pick
+        // the first visible/default choice so the final visual matches the frontend.
+        return true;
     }
 
     /**
@@ -635,7 +850,7 @@ class MKL_PC_Configuration_Builder
         // Forced choice from actions takes priority.
         if (isset($layer_state['forced_choice'])) {
             $forced = $layer_state['forced_choice'];
-            if ($forced !== null && $this->is_choice_visible($choice_state, $layer_id, $forced)) {
+            if ($forced !== null && $this->is_choice_allowed($choice_state, $layer_id, $forced)) {
                 $match = $this->get_choice_from_layer($layer_id, $forced);
                 if ($match) {
                     return $match;
@@ -647,6 +862,19 @@ class MKL_PC_Configuration_Builder
         if (! empty($layer_state['sync_source'])) {
             $source_layer_id = $layer_state['sync_source'];
             if (isset($selection_map[$source_layer_id])) {
+                // Try index-aligned sync first (mirrors frontend: content.at(index))
+                $src_choices = $this->get_layer_choices($source_layer_id);
+                $src_index = $this->get_selected_choice_index($source_layer_id, $selection_map, $src_choices);
+                if ($src_index !== null) {
+                    $target_index = $src_index;
+                    if (isset($choices[$target_index])) {
+                        $candidate = $choices[$target_index];
+                        $cid = $this->normalize_choice_id($candidate);
+                        if ($cid !== null && $this->is_choice_allowed($choice_state, $layer_id, $cid)) {
+                            return $candidate;
+                        }
+                    }
+                }
                 foreach ($selection_map[$source_layer_id] as $source_choice_id) {
                     if ($source_choice_id === null) {
                         continue;
@@ -670,7 +898,7 @@ class MKL_PC_Configuration_Builder
             if ($choice_id === null) {
                 continue;
             }
-            if ($this->is_choice_visible($choice_state, $layer_id, $choice_id)) {
+            if ($this->is_choice_allowed($choice_state, $layer_id, $choice_id)) {
                 return $choice;
             }
         }
@@ -684,7 +912,7 @@ class MKL_PC_Configuration_Builder
     private function match_choice($layer_id, $source_choice_id, $source_choice_name, array $choice_state)
     {
         if (isset($this->choice_map[$layer_id][$source_choice_id])) {
-            if ($this->is_choice_visible($choice_state, $layer_id, $source_choice_id)) {
+            if ($this->is_choice_allowed($choice_state, $layer_id, $source_choice_id)) {
                 return $this->choice_map[$layer_id][$source_choice_id];
             }
         }
@@ -696,13 +924,36 @@ class MKL_PC_Configuration_Builder
                 }
                 if (strcasecmp($candidate['name'], $source_choice_name) === 0) {
                     $candidate_id = $this->normalize_choice_id($candidate);
-                    if ($candidate_id !== null && $this->is_choice_visible($choice_state, $layer_id, $candidate_id)) {
+                    if ($candidate_id !== null && $this->is_choice_allowed($choice_state, $layer_id, $candidate_id)) {
                         return $candidate;
                     }
                 }
             }
         }
 
+        return null;
+    }
+
+    /**
+     * Find the index of the first selected choice in a source layer.
+     */
+    private function get_selected_choice_index($source_layer_id, array $selection_map, array $src_choices)
+    {
+        if (! isset($selection_map[$source_layer_id]) || empty($selection_map[$source_layer_id])) {
+            return null;
+        }
+        $selected_ids = $selection_map[$source_layer_id];
+        $map = [];
+        foreach ($src_choices as $idx => $c) {
+            $cid = $this->normalize_choice_id($c);
+            if ($cid !== null) {
+                $map[$cid] = $idx;
+            }
+        }
+        foreach ($selected_ids as $sel) {
+            if ($sel === null) continue;
+            if (isset($map[$sel])) return $map[$sel];
+        }
         return null;
     }
 
@@ -772,6 +1023,16 @@ class MKL_PC_Configuration_Builder
             if ('not_selected' === $action) {
                 return $layer_has_selection ? 'false' : 'unknown';
             }
+
+            // Visibility checks against default visibility when no specific choice is targeted
+            if ('visible' === $action) {
+                $visible = $this->default_layer_visible(isset($this->layer_map[$layer_id]) ? $this->layer_map[$layer_id] : []);
+                return $visible ? 'true' : 'false';
+            }
+            if ('hidden' === $action) {
+                $visible = $this->default_layer_visible(isset($this->layer_map[$layer_id]) ? $this->layer_map[$layer_id] : []);
+                return $visible ? 'false' : 'true';
+            }
         }
 
         if (-2 === $choice_id) {
@@ -781,6 +1042,16 @@ class MKL_PC_Configuration_Builder
 
             if ('not_selected' === $action) {
                 return $layer_has_selection ? 'true' : 'unknown';
+            }
+
+            // For visibility checks on "nothing selected", assume we only know defaults
+            if ('visible' === $action) {
+                $visible = $this->default_layer_visible(isset($this->layer_map[$layer_id]) ? $this->layer_map[$layer_id] : []);
+                return $visible ? 'true' : 'false';
+            }
+            if ('hidden' === $action) {
+                $visible = $this->default_layer_visible(isset($this->layer_map[$layer_id]) ? $this->layer_map[$layer_id] : []);
+                return $visible ? 'false' : 'true';
             }
         }
 
@@ -795,6 +1066,15 @@ class MKL_PC_Configuration_Builder
                 return $choice_is_selected ? 'true' : 'false';
             case 'not_selected':
                 return $choice_is_selected ? 'false' : 'true';
+            case 'visible':
+                // Use default visibility for this choice as approximation here
+                $choice = isset($this->choice_map[$layer_id][$choice_id]) ? $this->choice_map[$layer_id][$choice_id] : [];
+                $vis = $this->default_choice_visible($choice);
+                return $vis ? 'true' : 'false';
+            case 'hidden':
+                $choice = isset($this->choice_map[$layer_id][$choice_id]) ? $this->choice_map[$layer_id][$choice_id] : [];
+                $vis = $this->default_choice_visible($choice);
+                return $vis ? 'false' : 'true';
             default:
                 return 'unknown';
         }

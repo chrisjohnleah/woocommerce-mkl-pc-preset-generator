@@ -16,6 +16,9 @@ class MKL_PC_Preset_Conditional_Validator
     private $product_id;
     private $conditions;
     private $db;
+    private $layers = [];
+    private $layer_map = [];
+    private $choice_map = [];
 
     /**
      * Constructor
@@ -25,6 +28,7 @@ class MKL_PC_Preset_Conditional_Validator
         $this->product_id = $product_id;
         $this->db = \MKL\PC\Plugin::instance()->db;
         $this->load_conditions();
+        $this->load_structure();
     }
 
     /**
@@ -40,6 +44,50 @@ class MKL_PC_Preset_Conditional_Validator
         }
 
         error_log("Loaded " . count($this->conditions) . " conditions for product " . $this->product_id);
+    }
+
+    /**
+     * Load layers and choices to evaluate default visibility and mapping.
+     */
+    private function load_structure()
+    {
+        $layers = $this->db->get('layers', $this->product_id);
+        $this->layers = is_array($layers) ? $layers : [];
+        $this->layer_map = [];
+        foreach ($this->layers as $layer) {
+            if (isset($layer['_id'])) {
+                $this->layer_map[(int) $layer['_id']] = $layer;
+            }
+        }
+
+        $content_rows = $this->db->get('content', $this->product_id);
+        $this->choice_map = [];
+        if (is_array($content_rows)) {
+            foreach ($content_rows as $row) {
+                if (! isset($row['layerId'])) {
+                    continue;
+                }
+                $lid = (int) $row['layerId'];
+                if (! empty($row['choices']) && is_array($row['choices'])) {
+                    foreach ($row['choices'] as $choice) {
+                        // Normalise id
+                        $cid = null;
+                        if (isset($choice['_id'])) {
+                            $cid = is_numeric($choice['_id']) ? (int) $choice['_id'] : $choice['_id'];
+                        } elseif (isset($choice['id'])) {
+                            $cid = is_numeric($choice['id']) ? (int) $choice['id'] : $choice['id'];
+                        }
+                        if ($cid === null) {
+                            continue;
+                        }
+                        if (! isset($this->choice_map[$lid])) {
+                            $this->choice_map[$lid] = [];
+                        }
+                        $this->choice_map[$lid][$cid] = $choice;
+                    }
+                }
+            }
+        }
     }
 
     /**
@@ -79,43 +127,86 @@ class MKL_PC_Preset_Conditional_Validator
             }
         }
 
-        // Check each condition
-        foreach ($this->conditions as $condition) {
-            // Skip disabled conditions
-            if (! isset($condition['enabled']) || ! $condition['enabled']) {
-                continue;
-            }
+        // Build visibility state based on defaults (cshow) and conditions
+        $state = $this->compute_visibility_state($selection_map);
 
-            $matches = 0;
-            $total_rules = isset($condition['rules']) ? count($condition['rules']) : 0;
-
-            // Check all rules
-            if (isset($condition['rules'])) {
-                foreach ($condition['rules'] as $rule) {
-                    if ($this->check_rule($rule, $selection_map)) {
-                        $matches++;
-                    }
-                }
-            }
-
-            // Determine if condition is met
-            $condition_met = false;
-            if (isset($condition['relationship']) && $condition['relationship'] === 'OR') {
-                $condition_met = $matches > 0;
-            } else {
-                // AND relationship (default)
-                $condition_met = $matches === $total_rules;
-            }
-
-            // If condition is met, check if it would invalidate a USER-SELECTED layer
-            if ($condition_met && isset($condition['actions'])) {
-                if (! $this->validate_actions($condition['actions'], $selection_map, $user_layer_ids)) {
+        // 1) Every selected layer must remain visible
+        foreach ($selection_map as $lid => $choices) {
+            if (! empty($choices)) {
+                if (isset($state['layers'][$lid]['visible']) && ! $state['layers'][$lid]['visible']) {
                     return false;
                 }
             }
         }
 
-        return true;
+        // 2) Every selected choice must remain visible AND enabled
+        foreach ($selection_map as $lid => $choices) {
+            foreach ($choices as $cid) {
+                if ($cid === null) continue;
+                if (isset($state['choices'][$lid][$cid]['visible']) && ! $state['choices'][$lid][$cid]['visible']) {
+                    return false;
+                }
+                if (isset($state['choices'][$lid][$cid]['enabled']) && $state['choices'][$lid][$cid]['enabled'] === false) {
+                    return false;
+                }
+            }
+        }
+
+        // 2b) If a layer is visible and required, ensure it has at least one selected choice
+        foreach ($this->layer_map as $lid => $layer) {
+            if (! empty($state['layers'][$lid]['visible'])) {
+                $is_required = ! empty($layer['required']);
+                if ($is_required) {
+                    $sel = isset($selection_map[$lid]) ? array_filter($selection_map[$lid], function($v){ return $v !== null; }) : [];
+                    if (empty($sel)) {
+                        return false;
+                    }
+                }
+            }
+        }
+
+        // 3) Honour forced selections (actions -> select)
+        foreach ($state['layers'] as $lid => $lstate) {
+            if (isset($lstate['forced_choice'])) {
+                $forced = $lstate['forced_choice'];
+                $selected = isset($selection_map[$lid]) ? $selection_map[$lid] : [];
+                if (! in_array($forced, $selected, true)) {
+                    return false;
+                }
+            }
+        }
+
+        // 4) Existing logic: ensure actions don’t hide user selections
+        foreach ($this->conditions as $condition) {
+            if (! isset($condition['enabled']) || ! $condition['enabled']) continue;
+            if (! isset($condition['actions']) || ! is_array($condition['actions'])) continue;
+            $status = $this->evaluate_condition_status($condition, $selection_map);
+            if ('met' !== $status) continue;
+            if (! $this->validate_actions($condition['actions'], $selection_map, $user_layer_ids)) {
+                $is_valid = false;
+                // Allow custom code to override
+                return (bool) apply_filters('mkl_pc_preset_generator_validate_combination', $is_valid, $combination, $this->product_id);
+            }
+        }
+
+        // 5) Ensure this selection yields at least one visual image when built
+        $builder = new MKL_PC_Configuration_Builder($this->product_id);
+        $config = $builder->build_complete_configuration($combination);
+        $has_image = false;
+        if (is_array($config)) {
+            foreach ($config as $layer) {
+                if ((is_array($layer) && empty($layer['is_choice'])) || (is_object($layer) && isset($layer->is_choice) && ! $layer->is_choice)) {
+                    $img = is_array($layer) ? (isset($layer['image']) ? $layer['image'] : 0) : (isset($layer->image) ? $layer->image : 0);
+                    if (!empty($img)) { $has_image = true; break; }
+                }
+            }
+        }
+        if (! $has_image) {
+            return false;
+        }
+
+        $is_valid = true;
+        return (bool) apply_filters('mkl_pc_preset_generator_validate_combination', $is_valid, $combination, $this->product_id);
     }
 
     public function validate_partial_combination($combination)
@@ -140,21 +231,156 @@ class MKL_PC_Preset_Conditional_Validator
 
         $selected_layer_ids = array_keys($selection_map);
 
-        foreach ($this->conditions as $condition) {
-            if (! isset($condition['enabled']) || ! $condition['enabled']) {
-                continue;
+        // Build partial visibility state
+        $state = $this->compute_visibility_state($selection_map);
+
+        // Reject immediately if a chosen item becomes hidden
+        foreach ($selection_map as $lid => $choices) {
+            if (! empty($choices)) {
+                if (isset($state['layers'][$lid]['visible']) && ! $state['layers'][$lid]['visible']) {
+                    return false;
+                }
             }
-
-            $status = $this->evaluate_condition_status($condition, $selection_map);
-
-            if ('met' === $status && isset($condition['actions'])) {
-                if (! $this->validate_actions($condition['actions'], $selection_map, $selected_layer_ids)) {
+            foreach ($choices as $cid) {
+                if ($cid === null) continue;
+                if (isset($state['choices'][$lid][$cid]['visible']) && ! $state['choices'][$lid][$cid]['visible']) {
                     return false;
                 }
             }
         }
 
-        return true;
+        // Honour forced selections in partial state too
+        foreach ($state['layers'] as $lid => $lstate) {
+            if (isset($lstate['forced_choice']) && isset($selection_map[$lid])) {
+                $forced = $lstate['forced_choice'];
+                if (! in_array($forced, $selection_map[$lid], true)) {
+                    $is_valid = false;
+                    return (bool) apply_filters('mkl_pc_preset_generator_validate_combination', $is_valid, $selection, $this->product_id);
+                }
+            }
+        }
+
+        $is_valid = true;
+        return (bool) apply_filters('mkl_pc_preset_generator_validate_combination', $is_valid, $selection, $this->product_id);
+    }
+
+    /**
+     * Build visibility/selection state similar to the builder.
+     *
+     * @param array $selection_map layer_id => [choice_id,...]
+     * @return array{layers: array, choices: array}
+     */
+    private function compute_visibility_state(array $selection_map)
+    {
+        $layer_state = [];
+        foreach ($this->layer_map as $lid => $layer) {
+            $visible = true;
+            if (is_array($layer) && array_key_exists('cshow', $layer)) {
+                $visible = ($layer['cshow'] !== false);
+            }
+            $layer_state[$lid] = [
+                'visible' => $visible,
+            ];
+        }
+
+        $choice_state = [];
+        foreach ($this->choice_map as $lid => $choices) {
+            foreach ($choices as $cid => $choice) {
+                if (! isset($choice_state[$lid])) $choice_state[$lid] = [];
+                $cvis = true;
+                if (is_array($choice) && array_key_exists('cshow', $choice)) {
+                    $cvis = ($choice['cshow'] !== false);
+                }
+                $choice_state[$lid][$cid] = [ 'visible' => $cvis, 'enabled' => true ];
+            }
+        }
+
+        foreach ($this->conditions as $condition) {
+            if (empty($condition['enabled'])) continue;
+            $status = $this->evaluate_condition_status($condition, $selection_map);
+            if ('met' !== $status) continue;
+            if (empty($condition['actions']) || ! is_array($condition['actions'])) continue;
+
+            $source_layer = $this->resolve_condition_source_layer($condition);
+
+            foreach ($condition['actions'] as $action) {
+                $type = isset($action['type']) ? $action['type'] : '';
+                $name = isset($action['action']) ? $action['action'] : '';
+                $lid  = isset($action['layerId']) ? (int) $action['layerId'] : 0;
+                $cid  = isset($action['choiceId']) ? $action['choiceId'] : null;
+
+                if ($type === 'layer' && $lid) {
+                    if ($name === 'show') {
+                        $layer_state[$lid]['visible'] = true;
+                    } elseif ($name === 'hide') {
+                        $layer_state[$lid]['visible'] = false;
+                    } elseif ($name === 'sync' && $source_layer && $source_layer !== $lid) {
+                        $layer_state[$lid]['sync_source'] = $source_layer;
+                    } elseif ($name === 'reset') {
+                        unset($layer_state[$lid]['forced_choice']);
+                    }
+                } elseif ($type === 'choice' && $lid && $cid !== null) {
+                    if (! isset($choice_state[$lid])) $choice_state[$lid] = [];
+                    if (! isset($choice_state[$lid][$cid])) $choice_state[$lid][$cid] = ['visible' => true, 'enabled' => true];
+
+                    if ($name === 'show') {
+                        $choice_state[$lid][$cid]['visible'] = true;
+                    } elseif ($name === 'hide') {
+                        $choice_state[$lid][$cid]['visible'] = false;
+                    } elseif ($name === 'enable') {
+                        $choice_state[$lid][$cid]['enabled'] = true;
+                    } elseif ($name === 'disable') {
+                        $choice_state[$lid][$cid]['enabled'] = false;
+                    } elseif ($name === 'select') {
+                        $layer_state[$lid]['forced_choice'] = $cid;
+                    } elseif ($name === 'reset') {
+                        unset($layer_state[$lid]['forced_choice']);
+                    }
+                }
+            }
+        }
+
+        $state = [ 'layers' => $layer_state, 'choices' => $choice_state ];
+        return apply_filters('mkl_pc_preset_generator_visibility_state', $state, $selection_map, $this->product_id);
+    }
+
+    /**
+     * Public accessor to visibility/forced/enabled state for a given selection.
+     * Accepts the same combination structure used by the generators.
+     *
+     * @param array $combination Array of ['layer_id'=>int,'choice_id'=>int|null,...]
+     * @return array{layers: array, choices: array}
+     */
+    public function get_visibility_state_for_combination($combination)
+    {
+        $selection_map = [];
+        if (is_array($combination)) {
+            foreach ($combination as $choice) {
+                if (!is_array($choice)) continue;
+                if (!array_key_exists('layer_id', $choice)) continue;
+                $lid = (int) $choice['layer_id'];
+                $cid = array_key_exists('choice_id', $choice) ? $choice['choice_id'] : null;
+                if (!isset($selection_map[$lid])) $selection_map[$lid] = [];
+                $selection_map[$lid][] = $cid;
+            }
+        }
+        return $this->compute_visibility_state($selection_map);
+    }
+
+    /**
+     * Guess the source layer for sync actions within a condition.
+     */
+    private function resolve_condition_source_layer($condition)
+    {
+        if (empty($condition['rules']) || ! is_array($condition['rules'])) {
+            return null;
+        }
+        foreach ($condition['rules'] as $rule) {
+            if (! isset($rule['actioner']['layerId'])) continue;
+            $lid = (int) $rule['actioner']['layerId'];
+            if ($lid > 0) return $lid;
+        }
+        return null;
     }
 
     private function evaluate_condition_status($condition, $selection_map)
@@ -217,11 +443,46 @@ class MKL_PC_Preset_Conditional_Validator
             if ('not_selected' === $action) {
                 return $layer_has_selection ? 'false' : 'unknown';
             }
+
+            if ('visible' === $action) {
+                $layer = isset($this->layer_map[$layer_id]) ? $this->layer_map[$layer_id] : [];
+                $visible = true;
+                if (is_array($layer) && array_key_exists('cshow', $layer)) {
+                    $visible = ($layer['cshow'] !== false);
+                }
+                return $visible ? 'true' : 'false';
+            }
+            if ('hidden' === $action) {
+                $layer = isset($this->layer_map[$layer_id]) ? $this->layer_map[$layer_id] : [];
+                $visible = true;
+                if (is_array($layer) && array_key_exists('cshow', $layer)) {
+                    $visible = ($layer['cshow'] !== false);
+                }
+                return $visible ? 'false' : 'true';
+            }
         }
 
         if (-2 === $choice_id) {
             if ($layer_has_selection) {
                 return 'false';
+            }
+
+            // For visibility checks assume defaults
+            if ('visible' === $action) {
+                $layer = isset($this->layer_map[$layer_id]) ? $this->layer_map[$layer_id] : [];
+                $visible = true;
+                if (is_array($layer) && array_key_exists('cshow', $layer)) {
+                    $visible = ($layer['cshow'] !== false);
+                }
+                return $visible ? 'true' : 'false';
+            }
+            if ('hidden' === $action) {
+                $layer = isset($this->layer_map[$layer_id]) ? $this->layer_map[$layer_id] : [];
+                $visible = true;
+                if (is_array($layer) && array_key_exists('cshow', $layer)) {
+                    $visible = ($layer['cshow'] !== false);
+                }
+                return $visible ? 'false' : 'true';
             }
 
             return 'unknown';
@@ -238,6 +499,20 @@ class MKL_PC_Preset_Conditional_Validator
                 return $choice_is_selected ? 'true' : 'false';
             case 'not_selected':
                 return $choice_is_selected ? 'false' : 'true';
+            case 'visible':
+                $choice = isset($this->choice_map[$layer_id][$choice_id]) ? $this->choice_map[$layer_id][$choice_id] : [];
+                $cvis = true;
+                if (is_array($choice) && array_key_exists('cshow', $choice)) {
+                    $cvis = ($choice['cshow'] !== false);
+                }
+                return $cvis ? 'true' : 'false';
+            case 'hidden':
+                $choice = isset($this->choice_map[$layer_id][$choice_id]) ? $this->choice_map[$layer_id][$choice_id] : [];
+                $cvis = true;
+                if (is_array($choice) && array_key_exists('cshow', $choice)) {
+                    $cvis = ($choice['cshow'] !== false);
+                }
+                return $cvis ? 'false' : 'true';
             default:
                 return 'unknown';
         }
