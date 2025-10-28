@@ -37,6 +37,8 @@ class MKL_PC_Configuration_Builder
      */
     public function build_complete_configuration($user_choices)
     {
+        error_log("Config Builder: Building configuration from " . count($user_choices) . " user choices");
+        
         // Load all layers and content for this product
         $this->load_product_data();
 
@@ -44,10 +46,13 @@ class MKL_PC_Configuration_Builder
         $user_selection_map = [];
         foreach ($user_choices as $choice) {
             $user_selection_map[$choice['layer_id']] = $choice['choice_id'];
+            error_log("Config Builder: User selected layer " . $choice['layer_id'] . " choice " . $choice['choice_id'] . " (" . $choice['choice_name'] . ")");
         }
 
         // Build complete configuration by processing all layers
         $complete_config = [];
+        $visual_layers_added = 0;
+        $user_layers_added = 0;
 
         foreach ($this->all_layers as $layer) {
             $layer_id = $layer['_id'];
@@ -104,6 +109,8 @@ class MKL_PC_Configuration_Builder
                         'image_order' => $visual_image_order,
                         'name' => isset($active_choice['name']) ? $active_choice['name'] : '',
                     ];
+                    $visual_layers_added++;
+                    error_log("Config Builder: Added visual layer '$layer_name' with image ID $image_id");
                 }
             } else {
                 // User-selectable layers (Colour, Size, Worktop, etc.)
@@ -133,6 +140,7 @@ class MKL_PC_Configuration_Builder
                             'image_order' => $choice_image_order,
                             'name' => isset($selected_choice['name']) ? $selected_choice['name'] : '',
                         ];
+                        $user_layers_added++;
 
                         // Add SKU if present
                         if (isset($selected_choice['sku']) && $selected_choice['sku']) {
@@ -145,6 +153,7 @@ class MKL_PC_Configuration_Builder
             }
         }
 
+        error_log("Config Builder: Built configuration with $user_layers_added user layers and $visual_layers_added visual layers");
         return $this->normalize_configuration_order($complete_config);
     }
 
@@ -230,21 +239,31 @@ class MKL_PC_Configuration_Builder
      */
     private function get_choice_image_id($choice)
     {
+        $choice_id = isset($choice['_id']) ? $choice['_id'] : (isset($choice['id']) ? $choice['id'] : 'unknown');
+        
         // Look for image in the choice's images array
         if (isset($choice['images']) && is_array($choice['images'])) {
             foreach ($choice['images'] as $image_data) {
                 // Get the image for angle_id = 1
                 if (isset($image_data['angleId']) && $image_data['angleId'] == 1) {
                     if (isset($image_data['image']['id'])) {
-                        return intval($image_data['image']['id']);
+                        $image_id = intval($image_data['image']['id']);
+                        error_log("Config Builder: Found image ID $image_id for choice $choice_id (angle 1)");
+                        return $image_id;
                     }
                 }
             }
 
             // If no specific angle, try first image
             if (isset($choice['images'][0]['image']['id'])) {
-                return intval($choice['images'][0]['image']['id']);
+                $image_id = intval($choice['images'][0]['image']['id']);
+                error_log("Config Builder: Found image ID $image_id for choice $choice_id (first image)");
+                return $image_id;
             }
+            
+            error_log("Config Builder: No image found for choice $choice_id, images structure: " . print_r($choice['images'], true));
+        } else {
+            error_log("Config Builder: Choice $choice_id has no images array");
         }
 
         return 0;
