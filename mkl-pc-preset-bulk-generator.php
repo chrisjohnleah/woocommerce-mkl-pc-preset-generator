@@ -65,6 +65,7 @@ class MKL_PC_Preset_Bulk_Generator
         require_once MKL_PC_PRESET_GENERATOR_PATH . 'includes/class-configuration-builder.php';
         require_once MKL_PC_PRESET_GENERATOR_PATH . 'includes/class-preset-saver.php';
         require_once MKL_PC_PRESET_GENERATOR_PATH . 'includes/class-image-diagnostics.php';
+        require_once MKL_PC_PRESET_GENERATOR_PATH . 'includes/class-image-generator.php';
         require_once MKL_PC_PRESET_GENERATOR_PATH . 'includes/class-admin-ui.php';
 
         // Initialise components

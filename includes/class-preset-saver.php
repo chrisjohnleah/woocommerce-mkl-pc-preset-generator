@@ -124,43 +124,14 @@ class MKL_PC_Preset_Saver
         if (isset($saved['save_image_async']) && $saved['save_image_async']) {
             error_log("Triggering image generation for preset #$preset_id");
             
-            // Run diagnostics on the configuration
-            $diagnostic_report = MKL_PC_Preset_Image_Diagnostics::analyze_configuration($configuration_data, $preset_id);
-            MKL_PC_Preset_Image_Diagnostics::log_report($diagnostic_report);
+            // Use our image generator wrapper for better error handling and diagnostics
+            $image_result = MKL_PC_Preset_Image_Generator::generate_image($preset_id, $content_string);
             
-            error_log("Preset content type: " . gettype($preset->content));
-            error_log("Preset content sample: " . substr(print_r($preset->content, true), 0, 500));
-            
-            try {
-                // Ensure content is properly loaded - reload the preset to be sure
-                $preset_object = new Mkl_PC_Preset_Configuration($preset_id);
-                $preset_content = $preset_object->content;
-                
-                error_log("Reloaded preset content type: " . gettype($preset_content));
-                
-                if (empty($preset_content)) {
-                    error_log("ERROR: Preset content is empty after reload!");
-                    // Try to reconstruct from post_content
-                    $post = get_post($preset_id);
-                    if ($post && !empty($post->post_content)) {
-                        $preset_content = $post->post_content;
-                        error_log("Retrieved content from post_content, length: " . strlen($preset_content));
-                    }
-                }
-                
-                $image_id = $preset_object->save_image($preset_content, $preset_id);
-                if ($image_id && !is_wp_error($image_id)) {
-                    error_log("Successfully generated image #$image_id for preset #$preset_id");
-                } else {
-                    $error_details = is_wp_error($image_id) 
-                        ? $image_id->get_error_message() 
-                        : print_r($image_id, true);
-                    error_log("Image generation returned error/false: " . $error_details);
-                }
-            } catch (Exception $e) {
-                error_log("Image generation exception: " . $e->getMessage());
-                error_log("Stack trace: " . $e->getTraceAsString());
-                // Don't fail the whole preset save if image generation fails
+            if (is_wp_error($image_result)) {
+                error_log("Image generation failed: " . $image_result->get_error_message());
+                // Don't fail the preset save if image generation fails
+            } else {
+                error_log("Image generation successful, attachment ID: $image_result");
             }
         }
 

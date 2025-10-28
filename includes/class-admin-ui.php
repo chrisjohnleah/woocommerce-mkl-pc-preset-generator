@@ -1163,7 +1163,7 @@ class MKL_PC_Preset_Generator_Admin_UI
 
                 $save_image_async = isset($saved['save_image_async']) ? $saved['save_image_async'] : false;
 
-                // Trigger image generation
+                // Trigger image generation using our wrapper
                 if (
                     !$skip_thumbnail &&
                     $save_image_async &&
@@ -1172,7 +1172,17 @@ class MKL_PC_Preset_Generator_Admin_UI
                     $save_image_async['should_save'] &&
                     $preset_id
                 ) {
-                    $preset->save_image($preset->content, $preset_id);
+                    error_log("Image generation requested for preset #$preset_id");
+                    
+                    // Use our image generator wrapper for better error handling
+                    $image_result = MKL_PC_Preset_Image_Generator::generate_image($preset_id, $content_string);
+                    
+                    if (is_wp_error($image_result)) {
+                        error_log("Image generation failed: " . $image_result->get_error_message());
+                        // Don't fail the preset save, just log the error
+                    } else {
+                        error_log("Image generation successful, attachment ID: $image_result");
+                    }
                 }
 
                 error_log("Successfully saved expanded preset #$preset_id");
