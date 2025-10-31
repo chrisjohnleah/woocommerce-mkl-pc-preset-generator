@@ -1,7 +1,7 @@
 (function ($, _) {
     "use strict";
 
-    console.log("MKL PC Bulk Generator v1.1.3 loaded");
+    console.log("MKL PC Bulk Generator v1.1.4 loaded");
     var runMetrics = null;
     var currentRun = null;
     var statsUpdateScheduled = false;
@@ -120,6 +120,8 @@
         var lastRunPayload = null;
         var currentConfigState = new Map();
         var pendingTargetState = null;
+        var layerChoices = [];
+        var constraints = {}; // { layer_id: [choice_id] }
 
         var initialExisting = Number(MKL_PC_BulkGenerator.existing_total);
         if (Number.isFinite(initialExisting) && initialExisting >= 0) {
@@ -141,6 +143,103 @@
         $generateBtn.prop("disabled", false);
         canGenerateAfterRun = true;
 
+        // Locks UI state
+        var constraints = {}; // { layer_id: [choice_id] }
+        var layerChoices = [];
+
+        // Build Locks UI
+        (function buildLocksUI() {
+            var html = '' +
+              '<div class="mkl-pc-bulk-panel" id="mkl-pc-locks-panel">' +
+              '  <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">' +
+              '    <strong>Locked Choices</strong>' +
+              '    <button type="button" class="button" id="mkl-pc-locks-reset">Clear Locks</button>' +
+              '  </div>' +
+              '  <div id="mkl-pc-locks-body" style="margin-top:10px;display:grid;gap:8px;"></div>' +
+              '</div>';
+            $container.find('.mkl-pc-bulk-panels').prepend(html);
+            $container.on('click', '#mkl-pc-locks-reset', function(){
+                constraints = {};
+                renderLocksBody();
+            });
+        })();
+
+        // Fetch layers + choices to populate locks
+        (function fetchLayerChoices() {
+            var productId = getProductId();
+            if (!productId) return;
+            $.ajax({
+                url: MKL_PC_BulkGenerator.ajax_url,
+                type: 'POST',
+                dataType: 'json',
+                data: {
+                    action: 'mkl_pc_list_layers_choices',
+                    nonce: MKL_PC_BulkGenerator.nonce,
+                    product_id: productId,
+                },
+            }).done(function(res){
+                if (res && res.success && res.data && Array.isArray(res.data.layers)) {
+                    layerChoices = res.data.layers;
+                    // Parse URL locks
+                    constraints = parseConstraintsFromURL() || {};
+                    renderLocksBody();
+                }
+            });
+        })();
+
+        function parseConstraintsFromURL() {
+            try {
+                var out = {};
+                var params = new URLSearchParams(window.location.search);
+                params.forEach(function(value, key){
+                    var m = key.match(/^pc-lock\[(\d+)\]$/);
+                    if (m) {
+                        var lid = parseInt(m[1],10);
+                        var val = parseInt(value,10);
+                        if (Number.isFinite(lid) && Number.isFinite(val)) {
+                            out[lid] = [val];
+                        }
+                    }
+                });
+                return out;
+            } catch(e){ return {}; }
+        }
+
+        function renderLocksBody() {
+            var $body = $('#mkl-pc-locks-body');
+            if (!$body.length) return;
+            var html = '';
+            layerChoices.forEach(function(layer){
+                var lid = layer.id;
+                var lname = layer.name || (''+lid);
+                var selected = (constraints[lid] && constraints[lid][0] !== null) ? constraints[lid][0] : null;
+                html += '<div class="mkl-pc-lock-row" data-layer="'+lid+'">';
+                html += '<label style="display:block;font-weight:600;">'+lname+'</label>';
+                html += '<select class="mkl-pc-lock-select" style="min-width:220px;">';
+                html += '<option value="">Any</option>';
+                (layer.choices||[]).forEach(function(c){
+                    if (c.id === null) return; // skip null
+                    var sel = (selected !== null && Number(selected) === Number(c.id)) ? ' selected' : '';
+                    html += '<option value="'+c.id+'"'+sel+'>'+c.name+'</option>';
+                });
+                html += '</select>';
+                html += '</div>';
+            });
+            $body.html(html);
+        }
+
+        // Track constraint changes
+        $container.on('change', '.mkl-pc-lock-select', function(){
+            var $row = $(this).closest('.mkl-pc-lock-row');
+            var layerId = parseInt($row.data('layer'),10);
+            var val = $(this).val();
+            if (!layerId) return;
+            if (!val) {
+                delete constraints[layerId];
+            } else {
+                constraints[layerId] = [ parseInt(val,10) ];
+            }
+        });
         function getChunkSize() {
             return chunkSizeConfigured;
         }
@@ -617,6 +716,9 @@
                 product_id: productId,
                 chunk_size: options.chunkSize || chunkSizeConfigured,
             };
+            if (constraints && Object.keys(constraints).length) {
+                payload.constraints = JSON.stringify(constraints);
+            }
 
             if (options.forceNew) {
                 payload.force_new = 1;
@@ -670,7 +772,26 @@
                     .text(MKL_PC_BulkGenerator.strings.cancelling || "Cancelling...");
             }
             if (currentRun.runId) {
-                cancelBackendRun(currentRun.productId, currentRun.runId).always(function () {});
+                cancelBackendRun(currentRun.productId, currentRun.runId)
+                    .done(function (resp) {
+                        // If backend confirms cancellation, finish immediately to unstick UI
+                        var ok = resp && resp.success && resp.data && resp.data.run && resp.data.run.cancelled;
+                        if (ok) {
+                            combinationQueue = [];
+                            combinationProcessing = false;
+                            pendingBatchMeta = null;
+                            finishGeneration(
+                                getSavedCount(),
+                                MKL_PC_BulkGenerator.strings.cancelled ||
+                                    "Generation cancelled by user.",
+                                { cancelled: true },
+                            );
+                        }
+                    })
+                    .always(function () {
+                        scheduleStatsUpdate();
+                    });
+                return;
             }
             scheduleStatsUpdate();
         }
@@ -901,6 +1022,9 @@
                         action: "mkl_pc_generate_presets_estimate",
                         nonce: MKL_PC_BulkGenerator.nonce,
                         product_id: productId,
+                        constraints: (constraints && Object.keys(constraints).length)
+                            ? JSON.stringify(constraints)
+                            : undefined,
                     },
                 })
                     .done(function (response) {
@@ -1286,6 +1410,20 @@
         }
 
         function processCombinationQueue() {
+            // If user cancelled, end the run immediately regardless of queue state
+            if (isRunCancelled()) {
+                combinationQueue = [];
+                combinationProcessing = false;
+                pendingBatchMeta = null;
+                finishGeneration(
+                    getSavedCount(),
+                    MKL_PC_BulkGenerator.strings.cancelled ||
+                        "Generation cancelled by user.",
+                    { cancelled: true },
+                );
+                return;
+            }
+
             if (combinationProcessing) {
                 return;
             }
@@ -1328,6 +1466,7 @@
                 return;
             }
 
+            // Already handled at top, but keep this guard for safety
             if (isRunCancelled()) {
                 combinationQueue = [];
                 combinationProcessing = false;
@@ -1758,6 +1897,11 @@
             expandedConfiguration,
             callback,
         ) {
+            if (isRunCancelled()) {
+                // Do not proceed with any UI side-effects if cancelled
+                setTimeout(function(){ callback && callback(); }, 0);
+                return;
+            }
             if (
                 !expandedConfiguration ||
                 !Array.isArray(expandedConfiguration) ||
@@ -1989,8 +2133,16 @@
             }
 
             function processNext() {
+                if (isRunCancelled()) {
+                    setTimeout(function(){ callback && callback(); }, 0);
+                    return;
+                }
                 if (!queue.length) {
                     setTimeout(function () {
+                        if (isRunCancelled()) {
+                            callback && callback();
+                            return;
+                        }
                         var finalConfig = JSON.parse(
                             PC.fe.save_data.save(false),
                         );

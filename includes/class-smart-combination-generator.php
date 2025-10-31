@@ -16,6 +16,7 @@ class MKL_PC_Smart_Combination_Generator
 {
     private $product_id;
     private $layers = [];
+    private $constraints = [];
     private $validator;
     private $db;
     private $core_layer_names = [];
@@ -134,6 +135,42 @@ class MKL_PC_Smart_Combination_Generator
         error_log(sprintf('Smart Generator: Prepared %d layers for product %d', count($this->layers), $this->product_id));
         foreach (array_slice($this->layers, 0, 3) as $layer) {
             error_log(sprintf('  Layer %s (%d choices)', $layer['name'], count($layer['choices'])));
+        }
+    }
+
+    /**
+     * Set constraints for specific layers. Format: [layer_id => [choice_id, ...]] or single int.
+     */
+    public function set_constraints(array $constraints)
+    {
+        $normalized = [];
+        foreach ($constraints as $lid => $vals) {
+            $lid = (int) $lid;
+            if ($lid <= 0) continue;
+            if (is_array($vals)) {
+                $choices = array_values(array_unique(array_map('intval', $vals)));
+            } else {
+                $choices = [ (int) $vals ];
+            }
+            $choices = array_filter($choices, function($v){ return $v >= 0; });
+            if (!empty($choices)) {
+                $normalized[$lid] = $choices;
+            }
+        }
+        $this->constraints = $normalized;
+
+        if (!empty($this->constraints) && !empty($this->layers)) {
+            foreach ($this->layers as &$layer) {
+                $lid = isset($layer['id']) ? (int) $layer['id'] : 0;
+                if ($lid && isset($this->constraints[$lid])) {
+                    $allowed = $this->constraints[$lid];
+                    $layer['choices'] = array_values(array_filter($layer['choices'], function($c) use ($allowed) {
+                        if ($c['id'] === null) return false;
+                        return in_array((int)$c['id'], $allowed, true);
+                    }));
+                }
+            }
+            unset($layer);
         }
     }
 

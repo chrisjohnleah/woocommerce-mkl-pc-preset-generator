@@ -41,6 +41,7 @@ class MKL_PC_Preset_Generator_Admin_UI
         add_action('wp_ajax_mkl_pc_cancel_generation_run', [$this, 'ajax_cancel_run']);
         add_action('wp_ajax_mkl_pc_generate_presets_batch', [$this, 'ajax_generate_batch']);
         add_action('wp_ajax_mkl_pc_get_preset_snapshot', [$this, 'ajax_get_preset_snapshot']);
+        add_action('wp_ajax_mkl_pc_list_layers_choices', [$this, 'ajax_list_layers_choices']);
         add_action('wp_ajax_mkl_pc_save_expanded_preset', [$this, 'ajax_save_expanded_preset']);
         add_action('wp_ajax_mkl_pc_delete_all_presets', [$this, 'ajax_delete_all']);
         add_action('wp_ajax_mkl_pc_generate_preset_thumbnail', [$this, 'ajax_generate_preset_thumbnail']);
@@ -739,6 +740,71 @@ class MKL_PC_Preset_Generator_Admin_UI
     }
 
     /**
+     * AJAX: List user-facing layers and choices for a product, to drive the Locks UI
+     */
+    public function ajax_list_layers_choices()
+    {
+        check_ajax_referer('mkl_pc_bulk_generator', 'nonce');
+
+        if (! current_user_can('manage_woocommerce')) {
+            wp_send_json_error(['message' => __('Permission denied', 'mkl-pc-preset-generator')]);
+        }
+
+        $product_id = isset($_POST['product_id']) ? intval($_POST['product_id']) : 0;
+        if (! $product_id) {
+            wp_send_json_error(['message' => __('Invalid product ID', 'mkl-pc-preset-generator')]);
+        }
+
+        try {
+            $db = \MKL\PC\Plugin::instance()->db;
+            $combination_generator = new MKL_PC_Preset_Combination_Generator($product_id);
+            $user_layers = $combination_generator->get_user_layers();
+            $content_rows = $db->get('content', $product_id);
+            $content_map = [];
+            if (is_array($content_rows)) {
+                foreach ($content_rows as $row) {
+                    if (isset($row['layerId'])) {
+                        $content_map[$row['layerId']] = $row;
+                    }
+                }
+            }
+
+            $layers = [];
+            foreach ((array)$user_layers as $layer) {
+                $lid = isset($layer['_id']) ? $layer['_id'] : (isset($layer['id']) ? $layer['id'] : null);
+                if (!$lid) continue;
+                $lname = isset($layer['name']) ? $layer['name'] : '';
+                $type = isset($layer['type']) ? $layer['type'] : 'simple';
+                $is_required = !empty($layer['required']);
+                $entry = isset($content_map[$lid]) ? $content_map[$lid] : [];
+                $avail = isset($entry['choices']) && is_array($entry['choices']) ? $entry['choices'] : [];
+                $choices = [];
+                if (!$is_required && $type === 'simple') {
+                    $choices[] = [ 'id' => null, 'name' => __('Any', 'mkl-pc-preset-generator') ];
+                }
+                foreach ($avail as $choice) {
+                    if (! empty($choice['is_group'])) continue;
+                    $cid = isset($choice['id']) ? $choice['id'] : (isset($choice['_id']) ? $choice['_id'] : null);
+                    if ($cid === null) continue;
+                    $cname = isset($choice['name']) ? $choice['name'] : '';
+                    $choices[] = [ 'id' => intval($cid), 'name' => $cname ];
+                }
+                $layers[] = [
+                    'id' => intval($lid),
+                    'name' => $lname,
+                    'choices' => $choices,
+                ];
+            }
+
+            wp_send_json_success([
+                'layers' => $layers,
+            ]);
+        } catch (\Throwable $e) {
+            wp_send_json_error(['message' => $e->getMessage()]);
+        }
+    }
+
+    /**
      * AJAX: Begin or join a bulk generation run.
      */
     public function ajax_begin_run()
@@ -758,6 +824,30 @@ class MKL_PC_Preset_Generator_Admin_UI
             }
 
             $requested_chunk = isset($_POST['chunk_size']) ? intval($_POST['chunk_size']) : null;
+            $constraints = [];
+            if (!empty($_POST['constraints'])) {
+                $raw = $_POST['constraints'];
+                if (is_string($raw)) {
+                    $decoded = json_decode(stripslashes($raw), true);
+                    if (is_array($decoded)) $constraints = $decoded;
+                } elseif (is_array($raw)) {
+                    $constraints = $raw;
+                }
+                // sanitize
+                $clean = [];
+                foreach ($constraints as $lid => $vals) {
+                    $lid = intval($lid);
+                    if ($lid <= 0) continue;
+                    if (is_array($vals)) {
+                        $arr = array_values(array_unique(array_map('intval', $vals)));
+                    } else {
+                        $arr = [ intval($vals) ];
+                    }
+                    $arr = array_filter($arr, function($v){ return $v >= 0; });
+                    if (!empty($arr)) $clean[$lid] = $arr;
+                }
+                $constraints = $clean;
+            }
             $force_new = !empty($_POST['force_new']);
 
             $lock_token = $this->acquire_run_lock($product_id);
@@ -783,6 +873,7 @@ class MKL_PC_Preset_Generator_Admin_UI
             }
 
             $state['updated_at'] = time();
+            $state['constraints'] = $constraints;
 
             $this->save_run_state($product_id, $state);
             $this->release_run_lock($product_id, $lock_token);
@@ -959,6 +1050,9 @@ class MKL_PC_Preset_Generator_Admin_UI
             $lock_token = null;
 
             $smart_generator = new MKL_PC_Smart_Combination_Generator($product_id);
+            if (!empty($state['constraints']) && is_array($state['constraints'])) {
+                $smart_generator->set_constraints($state['constraints']);
+            }
             $saver = new MKL_PC_Preset_Saver($product_id);
             $config_builder = new MKL_PC_Configuration_Builder($product_id);
 
@@ -1490,6 +1584,32 @@ class MKL_PC_Preset_Generator_Admin_UI
     ) {
         unset($generator, $validator);
         $smart_generator = new MKL_PC_Smart_Combination_Generator($product_id);
+        // Apply constraints from POST if provided
+        $constraints = [];
+        if (!empty($_POST['constraints'])) {
+            $raw = $_POST['constraints'];
+            if (is_string($raw)) {
+                $decoded = json_decode(stripslashes($raw), true);
+                if (is_array($decoded)) $constraints = $decoded;
+            } elseif (is_array($raw)) {
+                $constraints = $raw;
+            }
+            $clean = [];
+            foreach ($constraints as $lid => $vals) {
+                $lid = intval($lid);
+                if ($lid <= 0) continue;
+                if (is_array($vals)) {
+                    $arr = array_values(array_unique(array_map('intval', $vals)));
+                } else {
+                    $arr = [ intval($vals) ];
+                }
+                $arr = array_filter($arr, function($v){ return $v >= 0; });
+                if (!empty($arr)) $clean[$lid] = $arr;
+            }
+            if (!empty($clean)) {
+                $smart_generator->set_constraints($clean);
+            }
+        }
 
         $sample_limit = max(1, (int) apply_filters('mkl_pc_preset_generator_estimate_sample_limit', 5000, $product_id));
         $time_limit = max(0.1, (float) apply_filters('mkl_pc_preset_generator_estimate_time_limit', 5.0, $product_id));
