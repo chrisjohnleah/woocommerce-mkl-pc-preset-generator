@@ -1,7 +1,7 @@
 (function ($, _) {
     "use strict";
 
-    console.log("MKL PC Bulk Generator v1.1.2 loaded");
+    console.log("MKL PC Bulk Generator v1.1.3 loaded");
     var runMetrics = null;
     var currentRun = null;
     var statsUpdateScheduled = false;
@@ -226,7 +226,7 @@
                 action: "mkl_pc_get_preset_snapshot",
                 nonce: MKL_PC_BulkGenerator.nonce,
                 product_id: productId,
-                include_titles: 0,
+                include_titles: 1,
             },
         })
             .done(function (response) {
@@ -247,13 +247,22 @@
                     productId: productId,
                     count: totalPresets,
                     titles: new Set(),
-                    titlesIncluded: false,
+                    titlesIncluded: !!response.data.titles_included,
                 };
 
                 knownPresetTitles = presetSnapshot.titles;
 
                 MKL_PC_BulkGenerator.existing_total = totalPresets;
                 updateExistingStat(totalPresets);
+
+                // Seed known titles set if we received them
+                if (response.data.titles && Array.isArray(response.data.titles)) {
+                    response.data.titles.forEach(function (t) {
+                        if (typeof t === "string" && t.trim().length) {
+                            knownPresetTitles.add(t.trim().toLowerCase());
+                        }
+                    });
+                }
 
                 deferred.resolve(presetSnapshot);
             })
@@ -1437,22 +1446,51 @@
                     ? performance.now()
                     : Date.now();
 
+            // Prefer mimicking Save Your Design exactly: build content via FE state and use core endpoints
+            function buildContentViaFrontend() {
+                try {
+                    if (!window.PC || !PC.fe || !PC.fe.layers || !PC.fe.save_data) return null;
+                    // Match upstream: order by image_order for correct stacking
+                    var prevOrderBy = PC.fe.layers.orderBy;
+                    PC.fe.layers.orderBy = 'image_order';
+                    PC.fe.layers.sort();
+                    var content = PC.fe.save_data.save();
+                    // Reset
+                    PC.fe.layers.orderBy = prevOrderBy || 'order';
+                    PC.fe.layers.sort();
+                    return content;
+                } catch (e) {
+                    return null;
+                }
+            }
+
+            var contentString = buildContentViaFrontend();
+            if (!contentString) {
+                // Fallback to our expanded configuration JSON
+                contentString = JSON.stringify(configuration);
+            }
+
+            // Use Save Your Design save endpoint for presets
+            var saveData = {
+                action: 'mkl_pc_save_configuration',
+                content: contentString,
+                config_type: 'preset',
+                id: productId,
+                title: generatedName,
+                security: (window.PC_SYD && PC_SYD.save_config_nonce) ? PC_SYD.save_config_nonce : ''
+            };
+
             $.ajax({
                 url: MKL_PC_BulkGenerator.ajax_url,
-                type: "POST",
-                data: {
-                    action: "mkl_pc_save_expanded_preset",
-                    nonce: MKL_PC_BulkGenerator.nonce,
-                    product_id: productId,
-                    preset_name: generatedName,
-                    configuration: JSON.stringify(configuration),
-                },
+                type: 'POST',
+                dataType: 'json',
+                data: saveData,
                 success: function (response) {
-                    var presetId = response.success
-                        ? response.data && response.data.preset_id
+                    var presetId = response && response.success && response.data
+                        ? (response.data.config_id || response.data.ID)
                         : null;
 
-                    if (response.success && presetId) {
+                    if (response && response.success && presetId) {
                         console.log("✓ Preset saved:", generatedName, "#", presetId);
 
                         var updatedExistingTotal;
@@ -1537,6 +1575,49 @@
                             "success",
                         );
 
+                        // Ensure thumbnail exists – mimic core flow first, then fallback to our endpoint
+                        (function ensureThumbnail() {
+                            function fallbackEnsure() {
+                                $.ajax({
+                                    url: MKL_PC_BulkGenerator.ajax_url,
+                                    type: 'POST',
+                                    dataType: 'json',
+                                    data: {
+                                        action: 'mkl_pc_generate_preset_thumbnail',
+                                        nonce: MKL_PC_BulkGenerator.nonce,
+                                        preset_id: presetId,
+                                    },
+                                }).done(function (r2) {
+                                    if (r2 && r2.success && r2.data && r2.data.url) {
+                                        appendLog("Generated thumbnail for preset #" + presetId, 'success');
+                                    }
+                                });
+                            }
+
+                            // Try core endpoint first
+                            if (window.PC_SYD && PC_SYD.save_config_image_nonce) {
+                                $.ajax({
+                                    url: MKL_PC_BulkGenerator.ajax_url,
+                                    type: 'POST',
+                                    dataType: 'json',
+                                    data: {
+                                        action: 'mkl_pc_generate_configuration_image',
+                                        config_id: presetId,
+                                        security: PC_SYD.save_config_image_nonce,
+                                    },
+                                }).done(function (res) {
+                                    if (!(res && res.success && res.data && res.data.thumbnail)) {
+                                        // Core returned missing URL; use our robust endpoint
+                                        fallbackEnsure();
+                                    } else {
+                                        appendLog("Generated thumbnail via core for preset #" + presetId, 'success');
+                                    }
+                                }).fail(fallbackEnsure);
+                            } else {
+                                fallbackEnsure();
+                            }
+                        })();
+
                         setTimeout(callback, 200);
                         return;
                     }
@@ -1560,6 +1641,29 @@
                             runMetrics.skippedDuplicates =
                                 (runMetrics.skippedDuplicates || 0) + 1;
                             scheduleStatsUpdate();
+                        }
+                        // Ensure thumbnail exists for the duplicate preset if the server returned its ID
+                        var existingId = response && response.data && response.data.preset_id
+                            ? Number(response.data.preset_id)
+                            : null;
+                        if (existingId && Number.isFinite(existingId) && existingId > 0) {
+                            $.ajax({
+                                url: MKL_PC_BulkGenerator.ajax_url,
+                                type: "POST",
+                                data: {
+                                    action: "mkl_pc_generate_preset_thumbnail",
+                                    nonce: MKL_PC_BulkGenerator.nonce,
+                                    preset_id: existingId,
+                                },
+                            }).done(function (thumbRes) {
+                                if (thumbRes && thumbRes.success && thumbRes.data && thumbRes.data.url) {
+                                    appendLog(
+                                        "Ensured thumbnail for duplicate preset #" + existingId,
+                                        "success",
+                                        { force: false },
+                                    );
+                                }
+                            });
                         }
                         if (titleKey) {
                             knownPresetTitles.add(titleKey);

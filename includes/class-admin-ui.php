@@ -43,6 +43,11 @@ class MKL_PC_Preset_Generator_Admin_UI
         add_action('wp_ajax_mkl_pc_get_preset_snapshot', [$this, 'ajax_get_preset_snapshot']);
         add_action('wp_ajax_mkl_pc_save_expanded_preset', [$this, 'ajax_save_expanded_preset']);
         add_action('wp_ajax_mkl_pc_delete_all_presets', [$this, 'ajax_delete_all']);
+        add_action('wp_ajax_mkl_pc_generate_preset_thumbnail', [$this, 'ajax_generate_preset_thumbnail']);
+
+        // High-priority compatibility override: ensure a thumbnail URL is returned for the core endpoint
+        // without modifying upstream plugins. If we can produce a URL, we respond and short-circuit.
+        add_action('wp_ajax_mkl_pc_generate_configuration_image', [$this, 'ajax_generate_configuration_image_compat'], 1);
     }
 
     /**
@@ -1090,7 +1095,7 @@ class MKL_PC_Preset_Generator_Admin_UI
             $configuration = json_decode(stripslashes($configuration), true);
         }
 
-        $configuration = $this->normalize_configuration_layers($configuration);
+        $configuration = $this->normalize_configuration_layers($configuration, $product_id);
         $normalized_title = trim(wp_strip_all_tags($preset_name));
         $config_hash = $this->generate_configuration_hash($configuration);
 
@@ -1110,13 +1115,11 @@ class MKL_PC_Preset_Generator_Admin_UI
         if ($normalized_title !== '') {
             $existing_by_title = $this->find_existing_preset_by_title($product_id, $normalized_title);
             if ($existing_by_title) {
-                error_log("Skipping expanded preset save. Duplicate title detected (#$existing_by_title)");
-                wp_send_json_error([
-                    'message' => __('Duplicate preset title already exists', 'mkl-pc-preset-generator'),
-                    'duplicate' => true,
-                    'preset_id' => $existing_by_title,
-                    'reason' => 'title',
-                ]);
+                // Title collision but configuration hash is different: auto-rename to a unique title
+                $original_title = $normalized_title;
+                $normalized_title = $this->make_unique_preset_name($product_id, $normalized_title);
+                $preset_name = $normalized_title;
+                error_log("Duplicate title detected (#$existing_by_title). Auto-renamed to '$normalized_title' from '$original_title'.");
             }
         }
 
@@ -1162,6 +1165,7 @@ class MKL_PC_Preset_Generator_Admin_UI
                 }
 
                 $save_image_async = isset($saved['save_image_async']) ? $saved['save_image_async'] : false;
+                $image_result = null;
 
                 // Trigger image generation using our wrapper
                 if (
@@ -1175,7 +1179,8 @@ class MKL_PC_Preset_Generator_Admin_UI
                     error_log("Image generation requested for preset #$preset_id");
                     
                     // Use our image generator wrapper for better error handling
-                    $image_result = MKL_PC_Preset_Image_Generator::generate_image($preset_id, $content_string);
+                    // Pass null to let generator use stored content or decode as needed
+                    $image_result = MKL_PC_Preset_Image_Generator::generate_image($preset_id, null);
                     
                     if (is_wp_error($image_result)) {
                         error_log("Image generation failed: " . $image_result->get_error_message());
@@ -1189,6 +1194,7 @@ class MKL_PC_Preset_Generator_Admin_UI
                 $response = [
                     'preset_id' => $preset_id,
                     'message' => isset($saved['message']) ? $saved['message'] : '',
+                    'title' => $preset_name,
                     'thumbnail' => [
                         'mode' => ($save_image_async && is_array($save_image_async) && !empty($save_image_async['should_save']))
                             ? 'async'
@@ -1196,7 +1202,25 @@ class MKL_PC_Preset_Generator_Admin_UI
                     ],
                 ];
 
-                if ($save_image_async && is_array($save_image_async)) {
+                if (!is_wp_error($image_result) && $image_result) {
+                    // Extra safety: ensure featured image is set on the preset
+                    $ok_thumb = set_post_thumbnail($preset_id, $image_result);
+                    if (!$ok_thumb || (int) get_post_thumbnail_id($preset_id) !== (int) $image_result) {
+                        update_post_meta($preset_id, '_thumbnail_id', (int) $image_result);
+                    }
+                    // We managed to generate synchronously; reflect that in response
+                    $response['thumbnail']['mode'] = 'sync';
+                    $response['thumbnail']['attachment_id'] = $image_result;
+                    $thumb_url = wp_get_attachment_image_url($image_result, 'thumbnail');
+                    if (!$thumb_url) {
+                        $thumb_url = wp_get_attachment_image_url($image_result, 'full');
+                    }
+                    if (!$thumb_url) {
+                        $thumb_url = wp_get_attachment_url($image_result);
+                    }
+                    $response['thumbnail']['url'] = $thumb_url;
+                } elseif ($save_image_async && is_array($save_image_async)) {
+                    // Fall back to async contract
                     $response['thumbnail'] = array_merge($response['thumbnail'], $save_image_async);
                 }
 
@@ -1237,6 +1261,216 @@ class MKL_PC_Preset_Generator_Admin_UI
         wp_send_json_success([
             'deleted' => $deleted,
         ]);
+    }
+
+    /**
+     * AJAX: Generate (or ensure) a thumbnail for an existing preset.
+     */
+    public function ajax_generate_preset_thumbnail()
+    {
+        check_ajax_referer('mkl_pc_bulk_generator', 'nonce');
+
+        if (! current_user_can('manage_woocommerce')) {
+            wp_send_json_error(['message' => __('Permission denied', 'mkl-pc-preset-generator')]);
+        }
+
+        $preset_id = isset($_POST['preset_id']) ? intval($_POST['preset_id']) : 0;
+        if (!$preset_id) {
+            wp_send_json_error(['message' => __('Invalid preset ID', 'mkl-pc-preset-generator')]);
+        }
+
+        $post = get_post($preset_id);
+        if (!$post || $post->post_type !== 'mkl_pc_configuration') {
+            wp_send_json_error(['message' => __('Not a valid preset', 'mkl-pc-preset-generator')]);
+        }
+
+        // If a thumbnail already exists, return it
+        $thumb_id = get_post_thumbnail_id($preset_id);
+        if ($thumb_id) {
+            $url = wp_get_attachment_image_url($thumb_id, 'thumbnail');
+            if (!$url) {
+                $url = wp_get_attachment_image_url($thumb_id, 'full');
+            }
+            if (!$url) {
+                $url = wp_get_attachment_url($thumb_id);
+            }
+            wp_send_json_success([
+                'attachment_id' => $thumb_id,
+                'url' => $url,
+                'already_exists' => true,
+            ]);
+        }
+
+        // Generate using the shared image generator wrapper
+        $result = MKL_PC_Preset_Image_Generator::generate_image($preset_id, null);
+        if (is_wp_error($result) || !$result) {
+            $msg = is_wp_error($result) ? $result->get_error_message() : __('Image generation failed', 'mkl-pc-preset-generator');
+            wp_send_json_error(['message' => $msg]);
+        }
+
+        // Ensure thumbnail is set
+        if ($preset_id) {
+            $ok = set_post_thumbnail($preset_id, $result);
+            if (!$ok || (int) get_post_thumbnail_id($preset_id) !== (int) $result) {
+                update_post_meta($preset_id, '_thumbnail_id', (int) $result);
+            }
+        }
+        // Ensure sizes metadata exists; regenerate if missing
+        $path = get_attached_file($result);
+        $relative = get_post_meta($result, '_wp_attached_file', true);
+        $uploads = wp_upload_dir();
+        $expected_url = $relative ? trailingslashit($uploads['baseurl']) . ltrim($relative, '/') : '';
+        $meta = wp_get_attachment_metadata($result);
+        if ((!is_array($meta) || empty($meta['sizes'])) && $path && file_exists($path)) {
+            if (!function_exists('wp_generate_attachment_metadata') && file_exists(ABSPATH . 'wp-admin/includes/image.php')) {
+                require_once ABSPATH . 'wp-admin/includes/image.php';
+            }
+            if (function_exists('wp_generate_attachment_metadata')) {
+                $new_meta = wp_generate_attachment_metadata($result, $path);
+                if ($new_meta) {
+                    wp_update_attachment_metadata($result, $new_meta);
+                }
+            }
+        }
+        // Ensure mime type and GUID are correct
+        $attach = get_post($result);
+        if ($attach && empty($attach->post_mime_type) && $path) {
+            $ft = wp_check_filetype($path);
+            if (!empty($ft['type'])) {
+                wp_update_post([
+                    'ID' => $result,
+                    'post_mime_type' => $ft['type'],
+                ]);
+            }
+        }
+        if ($attach && $expected_url) {
+            $needs_guid_fix = stripos((string)$attach->guid, 'file%20already%20exists') !== false || stripos((string)$attach->guid, 'file already exists') !== false;
+            if ($needs_guid_fix) {
+                wp_update_post([
+                    'ID' => $result,
+                    'guid' => $expected_url,
+                ]);
+            }
+        }
+
+        $url = wp_get_attachment_image_url($result, 'thumbnail');
+        if (!$url) {
+            $url = wp_get_attachment_image_url($result, 'full');
+        }
+        if (!$url) {
+            $url = wp_get_attachment_url($result);
+        }
+        wp_send_json_success([
+            'attachment_id' => $result,
+            'url' => $url,
+            'already_exists' => false,
+        ]);
+    }
+
+    /**
+     * Compatibility: intercept core image generation endpoint to ensure a URL is returned
+     * even when the file already exists, without editing upstream plugin code.
+     * If we successfully create or resolve an attachment, we return and stop further handlers.
+     * Otherwise, we let other handlers (upstream) continue by returning early.
+     */
+    public function ajax_generate_configuration_image_compat()
+    {
+        if (!is_user_logged_in()) {
+            return; // let upstream handle
+        }
+
+        // Mirror upstream nonce name to stay compatible with UI calls
+        $security = isset($_POST['security']) ? $_POST['security'] : '';
+        if (!$security) {
+            return;
+        }
+        try {
+            check_ajax_referer('save-config-image', 'security');
+        } catch (\Throwable $e) {
+            return; // invalid or different nonce, let upstream handle
+        }
+
+        $config_id = isset($_POST['config_id']) ? intval($_POST['config_id']) : 0;
+        if (!$config_id) {
+            return;
+        }
+
+        // If a thumbnail already exists, return it immediately
+        $thumb_id = get_post_thumbnail_id($config_id);
+        if ($thumb_id) {
+            $thumb_url = wp_get_attachment_thumb_url($thumb_id);
+            if ($thumb_url) {
+                error_log("Compat: existing thumbnail found for #$config_id -> $thumb_url");
+                wp_send_json_success(['thumbnail' => $thumb_url]);
+            }
+        }
+
+        // Use our robust wrapper to generate or resolve existing file/attachment
+        error_log("Compat: attempting image generation for preset #$config_id");
+        $result = MKL_PC_Preset_Image_Generator::generate_image($config_id, null);
+        if (!is_wp_error($result) && $result) {
+            // Ensure the preset carries the featured image for UI
+            $ok_thumb = set_post_thumbnail($config_id, $result);
+            if (!$ok_thumb || (int) get_post_thumbnail_id($config_id) !== (int) $result) {
+                update_post_meta($config_id, '_thumbnail_id', (int) $result);
+            }
+            // Normalize metadata, mime type, and GUID
+            $path = get_attached_file($result);
+            $relative = get_post_meta($result, '_wp_attached_file', true);
+            $uploads = wp_upload_dir();
+            $expected_url = $relative ? trailingslashit($uploads['baseurl']) . ltrim($relative, '/') : '';
+            $attach = get_post($result);
+            if ($attach && empty($attach->post_mime_type) && $path) {
+                $ft = wp_check_filetype($path);
+                if (!empty($ft['type'])) {
+                    wp_update_post([
+                        'ID' => $result,
+                        'post_mime_type' => $ft['type'],
+                    ]);
+                }
+            }
+            if ($attach && $expected_url) {
+                $needs_guid_fix = stripos((string)$attach->guid, 'file%20already%20exists') !== false || stripos((string)$attach->guid, 'file already exists') !== false;
+                if ($needs_guid_fix) {
+                    wp_update_post([
+                        'ID' => $result,
+                        'guid' => $expected_url,
+                    ]);
+                }
+            }
+            // Regenerate sizes metadata if missing
+            $meta = wp_get_attachment_metadata($result);
+            if ((!is_array($meta) || empty($meta['sizes'])) && $path && file_exists($path)) {
+                if (!function_exists('wp_generate_attachment_metadata') && file_exists(ABSPATH . 'wp-admin/includes/image.php')) {
+                    require_once ABSPATH . 'wp-admin/includes/image.php';
+                }
+                if (function_exists('wp_generate_attachment_metadata')) {
+                    $new_meta = wp_generate_attachment_metadata($result, $path);
+                    if ($new_meta) {
+                        wp_update_attachment_metadata($result, $new_meta);
+                    }
+                }
+            }
+            $url = wp_get_attachment_image_url($result, 'thumbnail');
+            if (!$url) {
+                $url = wp_get_attachment_image_url($result, 'full');
+            }
+            if (!$url) {
+                $url = wp_get_attachment_url($result);
+            }
+            if ($url) {
+                error_log("Compat: generated/resolved attachment #$result -> $url");
+                wp_send_json_success(['thumbnail' => $url]);
+            }
+        }
+
+        // Fall through to upstream handler if we couldn't resolve
+        if (is_wp_error($result)) {
+            error_log("Compat: generation failed for #$config_id -> " . $result->get_error_message());
+        } else {
+            error_log("Compat: generation returned empty for #$config_id");
+        }
+        return;
     }
 
     /**
@@ -1369,6 +1603,32 @@ class MKL_PC_Preset_Generator_Admin_UI
         ));
 
         return $existing_id ? intval($existing_id) : 0;
+    }
+
+    /**
+     * Generate a unique preset name by appending an incrementing suffix when needed.
+     *
+     * @param int $product_id
+     * @param string $base_title
+     * @return string
+     */
+    private function make_unique_preset_name($product_id, $base_title)
+    {
+        $base_title = trim($base_title);
+        if ($base_title === '') {
+            return $base_title;
+        }
+
+        $candidate = $base_title;
+        $suffix = 2;
+        while ($this->find_existing_preset_by_title($product_id, $candidate)) {
+            $candidate = sprintf('%s (%d)', $base_title, $suffix);
+            $suffix++;
+            if ($suffix > 5000) {
+                break; // bailout guard
+            }
+        }
+        return $candidate;
     }
 
     private function evaluate_core_layers(array $combination, array $core_layers_required)
@@ -1916,14 +2176,45 @@ class MKL_PC_Preset_Generator_Admin_UI
      * @param array $configuration
      * @return array
      */
-    private function normalize_configuration_layers($configuration)
+    private function normalize_configuration_layers($configuration, $product_id = 0)
     {
         if (!is_array($configuration) || empty($configuration)) {
             return $configuration;
         }
 
+        // Build a map of layer_id => image_order from core data to mirror UI ordering
+        $layer_image_orders = [];
+        if ($product_id) {
+            try {
+                $db = \MKL\PC\Plugin::instance()->db;
+                $layers = $db->get('layers', $product_id);
+                if (is_array($layers)) {
+                    foreach ($layers as $layer) {
+                        if (isset($layer['_id'])) {
+                            $lid = (int) $layer['_id'];
+                            $layer_image_orders[$lid] = isset($layer['image_order'])
+                                ? (int) $layer['image_order']
+                                : (isset($layer['order']) ? (int) $layer['order'] : 0);
+                        }
+                    }
+                }
+            } catch (\Throwable $e) {
+                // Non-fatal; fall back to incoming image_order values
+            }
+        }
+
         $indexed = [];
         foreach ($configuration as $index => $layer) {
+            // If we have the authoritative image_order from the layer, overwrite
+            $layer_id = $this->get_layer_property($layer, 'layer_id');
+            if ($layer_id !== null && isset($layer_image_orders[(int)$layer_id])) {
+                if (is_array($layer)) {
+                    $layer['image_order'] = $layer_image_orders[(int)$layer_id];
+                } elseif (is_object($layer)) {
+                    $layer->image_order = $layer_image_orders[(int)$layer_id];
+                }
+            }
+
             $indexed[] = [
                 'order' => $this->resolve_layer_order_value($layer),
                 'index' => $index,

@@ -86,6 +86,7 @@ class MKL_PC_Configuration_Builder
                     'layer_name' => $layer_name,
                     'image' => 0,
                     'order' => $layer_order,
+                    // Match core UI stacking: always use the layer's image_order
                     'image_order' => $layer_image_order,
                     'name' => '',
                 ];
@@ -97,7 +98,8 @@ class MKL_PC_Configuration_Builder
                 if ($active_choice) {
                     $image_id = $this->get_choice_image_id($active_choice);
                     $visual_order = isset($active_choice['order']) ? intval($active_choice['order']) : $layer_order;
-                    $visual_image_order = isset($active_choice['image_order']) ? intval($active_choice['image_order']) : $layer_image_order;
+                    // Core UI stacks layers by the layer model's image_order, not per-choice
+                    $visual_image_order = $layer_image_order;
                     $complete_config[] = [
                         'is_choice' => false,
                         'layer_id' => $layer_id,
@@ -128,7 +130,8 @@ class MKL_PC_Configuration_Builder
 
                     if ($selected_choice) {
                         $choice_order = isset($selected_choice['order']) ? intval($selected_choice['order']) : $layer_order;
-                        $choice_image_order = isset($selected_choice['image_order']) ? intval($selected_choice['image_order']) : $layer_image_order;
+                        // Always use the layer's image_order so stacking matches the UI
+                        $choice_image_order = $layer_image_order;
                         $complete_config[] = [
                             'is_choice' => true,
                             'layer_id' => $layer_id,
@@ -350,4 +353,3 @@ class MKL_PC_Configuration_Builder
         return null;
     }
 }
-

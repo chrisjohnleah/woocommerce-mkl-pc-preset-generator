@@ -125,7 +125,8 @@ class MKL_PC_Preset_Saver
             error_log("Triggering image generation for preset #$preset_id");
             
             // Use our image generator wrapper for better error handling and diagnostics
-            $image_result = MKL_PC_Preset_Image_Generator::generate_image($preset_id, $content_string);
+            // Pass null to let generator use stored content or decode as needed
+            $image_result = MKL_PC_Preset_Image_Generator::generate_image($preset_id, null);
             
             if (is_wp_error($image_result)) {
                 error_log("Image generation failed: " . $image_result->get_error_message());

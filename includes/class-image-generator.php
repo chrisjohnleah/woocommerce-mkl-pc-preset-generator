@@ -44,7 +44,7 @@ class MKL_PC_Preset_Image_Generator
 
         // Get configuration content
         $content = null;
-        
+
         if ($configuration !== null) {
             $content = $configuration;
         } elseif (!empty($preset->content)) {
@@ -58,7 +58,25 @@ class MKL_PC_Preset_Image_Generator
             }
         }
 
-        if (empty($content)) {
+        // If content is a JSON string, decode it into array/objects.
+        // The MKL save_image() method treats string input as a TEMP FILENAME, not JSON,
+        // so we must avoid passing raw JSON strings here.
+        if (is_string($content)) {
+            $trimmed = ltrim($content);
+            if ($trimmed !== '' && ($trimmed[0] === '[' || $trimmed[0] === '{')) {
+                $decoded = json_decode($content);
+                if (json_last_error() === JSON_ERROR_NONE && !empty($decoded)) {
+                    $content = $decoded; // pass decoded objects/arrays
+                    error_log("Image Generator: Decoded JSON configuration for generation");
+                } else {
+                    // Fallback: let save_image load from preset if possible
+                    $content = null;
+                    error_log("Image Generator: JSON decode failed; falling back to stored content");
+                }
+            }
+        }
+
+        if ($content === null && empty($preset->content)) {
             error_log("Image Generator: No content available for image generation");
             return new WP_Error('no_content', 'No configuration content available');
         }
@@ -86,7 +104,34 @@ class MKL_PC_Preset_Image_Generator
         error_log("Image Generator: Calling save_image() method");
         
         try {
+            // Pass null to use stored content when $content explicitly evaluated to null
             $image_id = $preset->save_image($content, $preset_id);
+
+            // Handle non-integer returns like 'file already exists'
+            if (!is_wp_error($image_id) && (!is_int($image_id) && !ctype_digit((string) $image_id))) {
+                $file_name = method_exists($preset, 'get_configuration_image_name')
+                    ? $preset->get_configuration_image_name()
+                    : '';
+                if ($file_name) {
+                    $uploads = wp_upload_dir();
+                    $url = trailingslashit($uploads['baseurl']) . 'mkl-pc-config-images/' . ltrim($file_name, '/');
+                    $path = trailingslashit($uploads['basedir']) . 'mkl-pc-config-images/' . ltrim($file_name, '/');
+                    if (class_exists('MKL\\PC\\Utils')) {
+                        $resolved = \MKL\PC\Utils::get_image_id($url);
+                        if ($resolved) {
+                            $image_id = $resolved;
+                            error_log("Image Generator: Resolved existing image attachment #$image_id for '$file_name'");
+                        } elseif (file_exists($path) && method_exists($preset, 'save_attachment')) {
+                            // Recreate attachment record and set as thumbnail
+                            $attachment_id = $preset->save_attachment($path, $preset_id);
+                            if ($attachment_id) {
+                                $image_id = $attachment_id;
+                                error_log("Image Generator: Recreated attachment from existing file, id #$attachment_id");
+                            }
+                        }
+                    }
+                }
+            }
             
             if (is_wp_error($image_id)) {
                 error_log("Image Generator: save_image returned WP_Error: " . $image_id->get_error_message());
@@ -104,7 +149,51 @@ class MKL_PC_Preset_Image_Generator
                 error_log("Image Generator: Generated ID $image_id is not a valid attachment");
                 return new WP_Error('invalid_attachment', 'Generated image ID is not valid');
             }
-            
+
+            // If upstream created a broken attachment (e.g., filename = 'file already exists'), repair it
+            $attached_path = get_attached_file($image_id);
+            $needs_repair = (!$attached_path || !file_exists($attached_path) || basename($attached_path) === 'file already exists');
+
+            $file_name = method_exists($preset, 'get_configuration_image_name') ? $preset->get_configuration_image_name() : '';
+            if ($needs_repair && $file_name) {
+                $uploads = wp_upload_dir();
+                $expected_path = trailingslashit($uploads['basedir']) . 'mkl-pc-config-images/' . ltrim($file_name, '/');
+                $expected_relative = 'mkl-pc-config-images/' . ltrim($file_name, '/');
+                $expected_guid = trailingslashit($uploads['baseurl']) . $expected_relative;
+
+                if (file_exists($expected_path)) {
+                    update_attached_file($image_id, $expected_path);
+                    update_post_meta($image_id, '_wp_attached_file', $expected_relative);
+                    wp_update_post([
+                        'ID' => $image_id,
+                        'guid' => $expected_guid,
+                    ]);
+
+                    if (!function_exists('wp_generate_attachment_metadata') && file_exists(ABSPATH . 'wp-admin/includes/image.php')) {
+                        require_once ABSPATH . 'wp-admin/includes/image.php';
+                    }
+                    if (function_exists('wp_generate_attachment_metadata')) {
+                        $meta = wp_generate_attachment_metadata($image_id, $expected_path);
+                        if ($meta) {
+                            wp_update_attachment_metadata($image_id, $meta);
+                        }
+                    }
+                    error_log("Image Generator: Repaired attachment #$image_id to $expected_relative");
+                } else {
+                    error_log("Image Generator: Expected file not found for attachment #$image_id -> $expected_path");
+                }
+            }
+
+            // Ensure the preset has a thumbnail set
+            if ($preset_id && function_exists('set_post_thumbnail')) {
+                $ok = set_post_thumbnail($preset_id, $image_id);
+                // Fallback: force meta if set_post_thumbnail fails due to post type support
+                if (!$ok || (int) get_post_thumbnail_id($preset_id) !== (int) $image_id) {
+                    update_post_meta($preset_id, '_thumbnail_id', (int) $image_id);
+                }
+            } else {
+                update_post_meta($preset_id, '_thumbnail_id', (int) $image_id);
+            }
             error_log("Image Generator: Successfully generated image #$image_id");
             return $image_id;
             
