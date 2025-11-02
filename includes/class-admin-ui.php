@@ -413,6 +413,28 @@ class MKL_PC_Preset_Generator_Admin_UI
                 </div>
 
                 <div class="mkl-pc-bulk-panels">
+                    <div class="mkl-pc-bulk-panel" id="mkl-pc-variations-panel">
+                        <div class="mkl-pc-variations-header" style="display:flex;flex-direction:column;gap:4px;">
+                            <strong><?php esc_html_e('Layer Variations', 'mkl-pc-preset-generator'); ?></strong>
+                            <p class="description" style="margin:0;">
+                                <?php esc_html_e('Pick up to two layers. When you start a generation run the plugin will iterate every valid choice for those layers on top of each base preset.', 'mkl-pc-preset-generator'); ?>
+                            </p>
+                        </div>
+                        <div class="mkl-pc-variations-body" style="display:grid;gap:12px;margin-top:12px;">
+                            <div class="mkl-pc-variations-layers" data-variation-layer-list></div>
+                            <div class="mkl-pc-variations-options" style="display:flex;flex-wrap:wrap;gap:16px;align-items:center;">
+                                <label style="display:flex;align-items:center;gap:6px;">
+                                    <input type="checkbox" data-variation-include-base checked />
+                                    <?php esc_html_e('Include the current selection', 'mkl-pc-preset-generator'); ?>
+                                </label>
+                                <label style="display:flex;align-items:center;gap:6px;">
+                                    <?php esc_html_e('Max variations', 'mkl-pc-preset-generator'); ?>
+                                    <input type="number" min="0" max="500" step="1" value="0" data-variation-limit style="width:90px;" />
+                                </label>
+                            </div>
+                            <p class="description" data-variation-message></p>
+                        </div>
+                    </div>
                     <div class="mkl-pc-bulk-panel">
                         <div class="mkl-pc-bulk-generator-info">
                             <div class="mkl-pc-bulk-stats">
@@ -538,6 +560,14 @@ class MKL_PC_Preset_Generator_Admin_UI
                 'estimate_prompt' => __('Tap estimate to calculate.', 'mkl-pc-preset-generator'),
                 'estimate_complete' => __('Estimate complete.', 'mkl-pc-preset-generator'),
                 'estimate_failed' => __('Failed to estimate presets.', 'mkl-pc-preset-generator'),
+                'variations_hint' => __('No variation layers selected. Base presets will be generated as normal.', 'mkl-pc-preset-generator'),
+                'variations_active' => __('Layer variations active for: %s.', 'mkl-pc-preset-generator'),
+                'variations_none' => __('No additional presets were queued for the chosen layers.', 'mkl-pc-preset-generator'),
+                'variations_limit' => __('Variation limit reached – refine your selection or raise the limit.', 'mkl-pc-preset-generator'),
+                'variations_select' => __('Select at least one layer to iterate.', 'mkl-pc-preset-generator'),
+                'variations_max_layers' => __('Select no more than two layers for this tool.', 'mkl-pc-preset-generator'),
+                'variations_invalid' => __('Select at least one layer or include the current selection.', 'mkl-pc-preset-generator'),
+                'variations_summary' => __('Queued %1$s variation presets (skipped %2$s duplicates, %3$s invalid).', 'mkl-pc-preset-generator'),
             ],
             'batch_size' => (int) apply_filters('mkl_pc_preset_generator_batch_size', 50, $product_id),
             'existing_total' => $existing_total,
@@ -850,6 +880,76 @@ class MKL_PC_Preset_Generator_Admin_UI
             }
             $force_new = !empty($_POST['force_new']);
 
+        $variation_axes = [];
+        if (isset($_POST['variation_axes'])) {
+            $raw_axes = $_POST['variation_axes'];
+            if (is_string($raw_axes)) {
+                $decoded_axes = json_decode(stripslashes($raw_axes), true);
+                if (is_array($decoded_axes)) {
+                    $variation_axes = $decoded_axes;
+                }
+            } elseif (is_array($raw_axes)) {
+                $variation_axes = $raw_axes;
+            }
+        }
+
+        $variation_axes = array_map('intval', (array) $variation_axes);
+        $variation_axes = array_filter($variation_axes, function ($value) {
+            return $value > 0;
+        });
+        $variation_axes = array_values(array_unique($variation_axes));
+
+        if (count($variation_axes) > 2) {
+            wp_send_json_error([
+                'message' => __('Select no more than two layers for this tool.', 'mkl-pc-preset-generator'),
+            ]);
+        }
+
+        $variation_include_base = true;
+        if (isset($_POST['variation_include_base'])) {
+            $raw_include = $_POST['variation_include_base'];
+            if (is_string($raw_include)) {
+                $variation_include_base = in_array(strtolower($raw_include), ['1', 'true', 'yes'], true);
+            } else {
+                $variation_include_base = (bool) intval($raw_include);
+            }
+        }
+
+        if (empty($variation_axes) && ! $variation_include_base) {
+            wp_send_json_error([
+                'message' => __('Select at least one layer or include the current selection.', 'mkl-pc-preset-generator'),
+            ]);
+        }
+
+        $variation_limit = 0;
+        if (isset($_POST['variation_limit'])) {
+            $variation_limit = max(0, intval($_POST['variation_limit']));
+        }
+
+        $variation_axis_names = [];
+        if (! empty($variation_axes)) {
+            $layer_name_map = [];
+            try {
+                $name_generator = new MKL_PC_Preset_Combination_Generator($product_id);
+                $all_layers = $name_generator->get_user_layers();
+                foreach ((array) $all_layers as $layer) {
+                    if (! isset($layer['_id'])) {
+                        continue;
+                    }
+                    $layer_id_int = (int) $layer['_id'];
+                    $layer_name_map[$layer_id_int] = isset($layer['name']) ? $layer['name'] : '';
+                }
+            } catch (Exception $e) {
+                error_log('Unable to resolve variation layer names: ' . $e->getMessage());
+            }
+
+            foreach ($variation_axes as $axis_id) {
+                $variation_axis_names[] = isset($layer_name_map[$axis_id]) && $layer_name_map[$axis_id] !== ''
+                    ? $layer_name_map[$axis_id]
+                    : sprintf(__('Layer %d', 'mkl-pc-preset-generator'), $axis_id);
+            }
+        }
+
             $lock_token = $this->acquire_run_lock($product_id);
             if (! $lock_token) {
                 wp_send_json_error([
@@ -874,6 +974,12 @@ class MKL_PC_Preset_Generator_Admin_UI
 
             $state['updated_at'] = time();
             $state['constraints'] = $constraints;
+        $state['variations'] = [
+            'axes' => $variation_axes,
+            'include_base' => $variation_include_base,
+            'limit' => $variation_limit,
+            'axis_names' => $variation_axis_names,
+        ];
 
             $this->save_run_state($product_id, $state);
             $this->release_run_lock($product_id, $lock_token);
@@ -1063,6 +1169,34 @@ class MKL_PC_Preset_Generator_Admin_UI
             $valid_combinations = [];
             $consumed = 0;
 
+            $variation_settings = isset($state['variations']) && is_array($state['variations'])
+                ? $state['variations']
+                : [];
+            $variation_axes = isset($variation_settings['axes'])
+                ? array_values(array_unique(array_map('intval', (array) $variation_settings['axes'])))
+                : [];
+            $variation_axes = array_filter($variation_axes, function ($value) {
+                return $value > 0;
+            });
+            $variation_include_base = isset($variation_settings['include_base'])
+                ? (bool) $variation_settings['include_base']
+                : true;
+            $variation_limit = isset($variation_settings['limit'])
+                ? max(0, (int) $variation_settings['limit'])
+                : 0;
+            $variation_axis_names = isset($variation_settings['axis_names']) && is_array($variation_settings['axis_names'])
+                ? array_values($variation_settings['axis_names'])
+                : [];
+            $variations_enabled = ! empty($variation_axes);
+            $variation_expander = null;
+            $variation_added = 0;
+            $variation_skipped_totals = [
+                'base' => 0,
+                'duplicate' => 0,
+                'invalid' => 0,
+            ];
+            $variation_limit_reached = false;
+
             $core_layers_required = apply_filters('mkl_pc_preset_generator_core_layers', ['Size', 'Colour', 'Worktop'], $product_id);
 
             foreach ($batch as $combination) {
@@ -1084,13 +1218,78 @@ class MKL_PC_Preset_Generator_Admin_UI
                     $expanded_configuration = [];
                 }
 
-                $valid_combinations[] = [
-                    'base_combination' => $combination,
-                    'preset_name' => $saver->generate_preset_name($combination, []),
-                    'expanded_configuration' => $expanded_configuration,
-                ];
+                $entries_for_combination = [];
 
-                $saved++;
+                if (! $variations_enabled || $variation_include_base) {
+                    $entries_for_combination[] = [
+                        'base_combination' => $combination,
+                        'preset_name' => $saver->generate_preset_name($combination, []),
+                        'expanded_configuration' => $expanded_configuration,
+                        'is_variation' => false,
+                    ];
+                } else {
+                    $variation_skipped_totals['base']++;
+                }
+
+                if ($variations_enabled) {
+                    if (! $variation_expander) {
+                        $variation_expander = new MKL_PC_Layer_Variation_Expander($product_id);
+                    }
+
+                    try {
+                        $expansion_result = $variation_expander->expand_from_combination(
+                            $combination,
+                            $variation_axes,
+                            [
+                                'include_base' => false,
+                                'limit' => $variation_limit,
+                                'skip_existing' => true,
+                            ]
+                        );
+                    } catch (Exception $e) {
+                        error_log('Variation expansion failed: ' . $e->getMessage());
+                        $expansion_result = [
+                            'variations' => [],
+                            'skipped' => [
+                                'base' => 0,
+                                'duplicate' => 0,
+                                'invalid' => 0,
+                            ],
+                            'limit_reached' => false,
+                        ];
+                    }
+
+                    if (isset($expansion_result['skipped']) && is_array($expansion_result['skipped'])) {
+                        foreach ($variation_skipped_totals as $key => $value) {
+                            if (isset($expansion_result['skipped'][$key])) {
+                                $variation_skipped_totals[$key] += (int) $expansion_result['skipped'][$key];
+                            }
+                        }
+                    }
+
+                    if (! empty($expansion_result['limit_reached'])) {
+                        $variation_limit_reached = true;
+                    }
+
+                    if (! empty($expansion_result['variations']) && is_array($expansion_result['variations'])) {
+                        foreach ($expansion_result['variations'] as $variation_entry) {
+                            $entries_for_combination[] = [
+                                'base_combination' => isset($variation_entry['base_combination']) ? $variation_entry['base_combination'] : $combination,
+                                'preset_name' => isset($variation_entry['preset_name']) ? $variation_entry['preset_name'] : $saver->generate_preset_name($combination, []),
+                                'expanded_configuration' => isset($variation_entry['expanded_configuration']) ? $variation_entry['expanded_configuration'] : $expanded_configuration,
+                                'is_variation' => true,
+                            ];
+                        }
+
+                        $variation_added += count($expansion_result['variations']);
+                    }
+                }
+
+                foreach ($entries_for_combination as $entry) {
+                    $valid_combinations[] = $entry;
+                }
+
+                $saved += count($entries_for_combination);
             }
 
             $state_after = null;
@@ -1140,6 +1339,17 @@ class MKL_PC_Preset_Generator_Admin_UI
                 'run' => $payload,
                 'chunk_size' => $chunk_size,
             ];
+
+            if ($variations_enabled || ! $variation_include_base) {
+                $response['variation_summary'] = [
+                    'added' => $variation_added,
+                    'skipped' => $variation_skipped_totals,
+                    'limit_reached' => $variation_limit_reached,
+                    'axes' => $variation_axes,
+                    'axis_names' => $variation_axis_names,
+                    'include_base' => $variation_include_base,
+                ];
+            }
 
             wp_send_json_success($response);
         } catch (Exception $e) {
@@ -2028,6 +2238,12 @@ class MKL_PC_Preset_Generator_Admin_UI
             'skipped_total' => 0,
             'is_complete' => false,
             'is_exhausted' => false,
+            'variations' => [
+                'axes' => [],
+                'include_base' => true,
+                'limit' => 0,
+                'axis_names' => [],
+            ],
         ];
 
         return $state;
@@ -2055,6 +2271,12 @@ class MKL_PC_Preset_Generator_Admin_UI
             'is_exhausted' => !empty($state['is_exhausted']),
             'reservation_ttl' => isset($state['reservation_ttl']) ? (int) $state['reservation_ttl'] : 0,
             'skipped_total' => isset($state['skipped_total']) ? (int) $state['skipped_total'] : 0,
+            'variations' => isset($state['variations']) ? $state['variations'] : [
+                'axes' => [],
+                'include_base' => true,
+                'limit' => 0,
+                'axis_names' => [],
+            ],
         ];
     }
 

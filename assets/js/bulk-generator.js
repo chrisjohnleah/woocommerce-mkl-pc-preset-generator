@@ -94,6 +94,11 @@
         var $asyncThumbs = $container.find('[data-live="async-thumbs"]');
         var $skipped = $container.find('[data-live="skipped-duplicates"]');
         var $logList = $container.find('[data-live-log]');
+        var $variationsPanel = $container.find('#mkl-pc-variations-panel');
+        var $variationsList = $variationsPanel.length ? $variationsPanel.find('[data-variation-layer-list]') : $();
+        var $variationsIncludeBase = $variationsPanel.length ? $variationsPanel.find('[data-variation-include-base]') : $();
+        var $variationsLimit = $variationsPanel.length ? $variationsPanel.find('[data-variation-limit]') : $();
+        var $variationsMessage = $variationsPanel.length ? $variationsPanel.find('[data-variation-message]') : $();
         var defaultGenerateLabel = $generateBtn.text();
         var defaultStopLabel = $stopBtn.length ? $stopBtn.text() : "Stop";
         var defaultStatusText = MKL_PC_BulkGenerator.strings.ready ||
@@ -122,6 +127,18 @@
         var pendingTargetState = null;
         var layerChoices = [];
         var constraints = {}; // { layer_id: [choice_id] }
+        var variationPrefs = {
+            axes: [],
+            includeBase: true,
+            limit: 0,
+        };
+        var variationRunSummary = {
+            added: 0,
+            duplicates: 0,
+            invalid: 0,
+            baseSkipped: 0,
+            limitReached: false,
+        };
 
         var initialExisting = Number(MKL_PC_BulkGenerator.existing_total);
         if (Number.isFinite(initialExisting) && initialExisting >= 0) {
@@ -183,6 +200,8 @@
                     // Parse URL locks
                     constraints = parseConstraintsFromURL() || {};
                     renderLocksBody();
+                    renderVariationLayerList();
+                    syncVariationPrefsFromUI();
                 }
             });
         })();
@@ -227,6 +246,196 @@
             });
             $body.html(html);
         }
+
+        function ensureRunMetricsContext(initialExisting) {
+            if (runMetrics) {
+                return;
+            }
+
+            var existing = Number.isFinite(initialExisting)
+                ? initialExisting
+                : Number(MKL_PC_BulkGenerator.existing_total || 0);
+
+            if (!Number.isFinite(existing) || existing < 0) {
+                existing = 0;
+            }
+
+            initialiseRunMetrics(existing, chunkSizeConfigured);
+
+            if (runMetrics && !runMetrics.runId) {
+                runMetrics.runId = 'variation-' + Date.now();
+            }
+        }
+
+        function setVariationMessage(text, tone) {
+            if (!$variationsMessage.length) {
+                return;
+            }
+            tone = tone || "info";
+            $variationsMessage
+                .removeClass("estimate--info estimate--success estimate--warn estimate--error")
+                .addClass("estimate--" + tone)
+                .text(text || "");
+        }
+
+        function resolveLayerName(layerId) {
+            var match = (layerChoices || []).find(function (layer) {
+                var lid = layer && (layer.id !== undefined ? layer.id : layer.layer_id);
+                return Number(lid) === Number(layerId);
+            });
+            return match && match.name ? match.name : ('Layer ' + layerId);
+        }
+
+        function refreshVariationStatus() {
+            if (! $variationsPanel.length) {
+                return;
+            }
+
+            if (!variationPrefs.axes.length) {
+                if (variationPrefs.includeBase) {
+                    setVariationMessage(MKL_PC_BulkGenerator.strings.variations_hint || "No variation layers selected. Base presets will be generated as normal.", "info");
+                } else {
+                    setVariationMessage(MKL_PC_BulkGenerator.strings.variations_invalid || "Select at least one layer or include the current selection.", "warn");
+                }
+                return;
+            }
+
+            var axisNames = variationPrefs.axes.map(resolveLayerName);
+
+            var message = (MKL_PC_BulkGenerator.strings.variations_active || 'Layer variations active for: %s.')
+                .replace('%s', axisNames.join(', '));
+
+            var tone = variationPrefs.includeBase ? 'success' : 'info';
+            setVariationMessage(message, tone);
+        }
+
+        function renderVariationLayerList() {
+            if (!$variationsList.length) {
+                return;
+            }
+
+            if (!Array.isArray(layerChoices) || !layerChoices.length) {
+                setVariationMessage(MKL_PC_BulkGenerator.strings.variations_select || "Select at least one layer to iterate.", "info");
+                $variationsList.html('<p class="description">' + _.escape(MKL_PC_BulkGenerator.strings.variations_select || "Select at least one layer to iterate.") + '</p>');
+                return;
+            }
+
+            var filteredAxes = variationPrefs.axes.filter(function (id) {
+                return layerChoices.some(function (layer) {
+                    var lid = layer && (layer.id !== undefined ? layer.id : layer.layer_id);
+                    return Number(lid) === Number(id);
+                });
+            });
+            variationPrefs.axes = filteredAxes.slice(0, 2);
+
+            var html = layerChoices.map(function (layer) {
+                var lid = layer && (layer.id !== undefined ? layer.id : layer.layer_id);
+                lid = parseInt(lid, 10);
+                if (!Number.isFinite(lid) || lid <= 0) {
+                    return '';
+                }
+                var label = resolveLayerName(lid);
+                var checked = variationPrefs.axes.indexOf(lid) !== -1 ? ' checked' : '';
+                return '<label class="mkl-pc-variation-item" style="display:flex;align-items:center;gap:6px;">' +
+                    '<input type="checkbox" value="' + lid + '"' + checked + ' />' +
+                    _.escape(label) +
+                    '</label>';
+            }).join('');
+
+            $variationsList.html(html);
+        }
+
+        function syncVariationPrefsFromUI() {
+            if ($variationsList.length) {
+                var selected = [];
+                $variationsList.find('input[type="checkbox"]').each(function () {
+                    if (this.checked) {
+                        var value = parseInt($(this).val(), 10);
+                        if (Number.isFinite(value) && value > 0) {
+                            selected.push(value);
+                        }
+                    }
+                });
+                if (selected.length > 2) {
+                    selected = selected.slice(0, 2);
+                    setVariationMessage(MKL_PC_BulkGenerator.strings.variations_max_layers || "Select no more than two layers for this tool.", "warn");
+                }
+                variationPrefs.axes = selected;
+            }
+
+            if ($variationsIncludeBase.length) {
+                variationPrefs.includeBase = !!$variationsIncludeBase.prop('checked');
+            }
+
+            if ($variationsLimit.length) {
+                var limitValue = parseInt($variationsLimit.val(), 10);
+                if (Number.isFinite(limitValue) && limitValue > 0) {
+                    variationPrefs.limit = limitValue;
+                } else {
+                    variationPrefs.limit = 0;
+                    $variationsLimit.val('');
+                }
+            }
+
+            refreshVariationStatus();
+        }
+
+        function attachVariationEvents() {
+            if (!$variationsPanel.length) {
+                return;
+            }
+
+            if ($variationsList.length) {
+                $variationsList.on('change', 'input[type="checkbox"]', function () {
+                    syncVariationPrefsFromUI();
+                });
+            }
+
+            if ($variationsIncludeBase.length) {
+                $variationsIncludeBase.on('change', function () {
+                    syncVariationPrefsFromUI();
+                });
+            }
+
+            if ($variationsLimit.length) {
+                $variationsLimit.on('change', function () {
+                    syncVariationPrefsFromUI();
+                });
+            }
+        }
+
+        function updateVariationSummaryDisplay() {
+            if (!variationPrefs.axes.length) {
+                refreshVariationStatus();
+                return;
+            }
+
+            var axisNames = variationPrefs.axes.map(resolveLayerName);
+            var prefix = '';
+            if (axisNames.length) {
+                prefix = (MKL_PC_BulkGenerator.strings.variations_active || 'Layer variations active for: %s.')
+                    .replace('%s', axisNames.join(', ')) + ' ';
+            }
+
+            var summaryMessage = (MKL_PC_BulkGenerator.strings.variations_summary || 'Queued %1$s variation presets (skipped %2$s duplicates, %3$s invalid).')
+                .replace('%1$s', formatNumber(variationRunSummary.added || 0))
+                .replace('%2$s', formatNumber(variationRunSummary.duplicates || 0))
+                .replace('%3$s', formatNumber(variationRunSummary.invalid || 0));
+
+            if (variationRunSummary.baseSkipped) {
+                summaryMessage += ' (' + formatNumber(variationRunSummary.baseSkipped) + ' base selections skipped)';
+            }
+
+            if (variationRunSummary.limitReached) {
+                summaryMessage += ' ' + (MKL_PC_BulkGenerator.strings.variations_limit || 'Variation limit reached – refine your selection or raise the limit.');
+            }
+
+            setVariationMessage(prefix + summaryMessage, variationRunSummary.limitReached ? 'warn' : 'info');
+        }
+
+        renderVariationLayerList();
+        attachVariationEvents();
+        syncVariationPrefsFromUI();
 
         // Track constraint changes
         $container.on('change', '.mkl-pc-lock-select', function(){
@@ -500,6 +709,14 @@
             combinationQueue = [];
             combinationProcessing = false;
             pendingBatchMeta = null;
+            variationRunSummary = {
+                added: 0,
+                duplicates: 0,
+                invalid: 0,
+                baseSkipped: 0,
+                limitReached: false,
+            };
+            refreshVariationStatus();
         }
 
         function captureButtonState() {
@@ -534,6 +751,7 @@
                     $estimateBtn.prop("disabled", false).text(defaultEstimateLabel);
                 }
             }
+            updateVariationSummaryDisplay();
             scheduleStatsUpdate();
         }
 
@@ -690,6 +908,53 @@
             currentRun.reservationTtl = run.reservation_ttl || currentRun.reservationTtl || 0;
             lastRunPayload = run;
 
+            if (run.variations && typeof run.variations === "object") {
+                var serverVariations = run.variations;
+                var serverAxes = Array.isArray(serverVariations.axes)
+                    ? Array.from(
+                        new Set(
+                            serverVariations.axes
+                                .map(function (id) {
+                                    return parseInt(id, 10);
+                                })
+                                .filter(function (id) {
+                                    return Number.isFinite(id) && id > 0;
+                                })
+                        )
+                    )
+                    : [];
+                if (serverAxes.length > 2) {
+                    serverAxes = serverAxes.slice(0, 2);
+                }
+                var serverIncludeBase = serverVariations.include_base !== undefined
+                    ? !!serverVariations.include_base
+                    : variationPrefs.includeBase;
+                var serverLimit = serverVariations.limit && parseInt(serverVariations.limit, 10) > 0
+                    ? parseInt(serverVariations.limit, 10)
+                    : 0;
+
+                var axesChanged = serverAxes.length !== variationPrefs.axes.length || serverAxes.some(function (value, index) {
+                    return value !== variationPrefs.axes[index];
+                });
+                var includeChanged = serverIncludeBase !== variationPrefs.includeBase;
+                var limitChanged = serverLimit !== variationPrefs.limit;
+
+                if (axesChanged || includeChanged || limitChanged) {
+                    variationPrefs.axes = serverAxes;
+                    variationPrefs.includeBase = serverIncludeBase;
+                    variationPrefs.limit = serverLimit;
+
+                    renderVariationLayerList();
+                    if ($variationsIncludeBase.length) {
+                        $variationsIncludeBase.prop('checked', variationPrefs.includeBase);
+                    }
+                    if ($variationsLimit.length) {
+                        $variationsLimit.val(variationPrefs.limit > 0 ? variationPrefs.limit : '');
+                    }
+                    syncVariationPrefsFromUI();
+                }
+            }
+
             if (!runMetrics) {
                 initialiseRunMetrics(
                     Number.isFinite(presetSnapshot && presetSnapshot.count)
@@ -718,6 +983,14 @@
             };
             if (constraints && Object.keys(constraints).length) {
                 payload.constraints = JSON.stringify(constraints);
+            }
+
+            if (variationPrefs) {
+                payload.variation_axes = JSON.stringify(variationPrefs.axes || []);
+                payload.variation_include_base = variationPrefs.includeBase ? 1 : 0;
+                if (variationPrefs.limit && variationPrefs.limit > 0) {
+                    payload.variation_limit = variationPrefs.limit;
+                }
             }
 
             if (options.forceNew) {
@@ -820,11 +1093,34 @@
                 return;
             }
 
+            if (!variationPrefs.includeBase && !variationPrefs.axes.length) {
+                var invalidMessage = MKL_PC_BulkGenerator.strings.variations_invalid || "Select at least one layer or include the current selection.";
+                setVariationMessage(invalidMessage, "warn");
+                setStatus(invalidMessage, "warn");
+                return;
+            }
+
+            variationRunSummary = {
+                added: 0,
+                duplicates: 0,
+                invalid: 0,
+                baseSkipped: 0,
+                limitReached: false,
+            };
+
             var preparingLabel = MKL_PC_BulkGenerator.strings.preparing ||
                 "Preparing preset run...";
             setStatus(preparingLabel, "info");
             appendLog(preparingLabel, "info", { force: true });
             setRunningState(true);
+
+            if (variationPrefs.axes.length) {
+                var axisNames = variationPrefs.axes.map(resolveLayerName);
+                appendLog('Layer variations enabled for: ' + axisNames.join(', '), 'info', { force: true });
+                updateVariationSummaryDisplay();
+            } else {
+                refreshVariationStatus();
+            }
 
             var snapshot = null;
             if (presetSnapshot && presetSnapshot.productId === productId) {
@@ -1025,6 +1321,9 @@
                         constraints: (constraints && Object.keys(constraints).length)
                             ? JSON.stringify(constraints)
                             : undefined,
+                        variation_axes: JSON.stringify(variationPrefs.axes || []),
+                        variation_include_base: variationPrefs.includeBase ? 1 : 0,
+                        variation_limit: variationPrefs.limit || 0,
                     },
                 })
                     .done(function (response) {
@@ -1259,6 +1558,19 @@
                     var data = response.data || {};
                     if (data.run) {
                         syncRunFromPayload(data.run);
+                    }
+
+                    if (data.variation_summary) {
+                        var vs = data.variation_summary;
+                        var skipped = vs.skipped || {};
+                        variationRunSummary.added += vs.added || 0;
+                        variationRunSummary.duplicates += skipped.duplicate || 0;
+                        variationRunSummary.invalid += skipped.invalid || 0;
+                        variationRunSummary.baseSkipped += skipped.base || 0;
+                        if (vs.limit_reached) {
+                            variationRunSummary.limitReached = true;
+                        }
+                        updateVariationSummaryDisplay();
                     }
 
                     var attemptedFromServer = data.run && typeof data.run.attempted_total === "number"
