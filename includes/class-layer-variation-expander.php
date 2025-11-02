@@ -60,6 +60,20 @@ class MKL_PC_Layer_Variation_Expander
     private $layer_index = [];
 
     /**
+     * Cached map of existing configuration hashes.
+     *
+     * @var array<string, bool>|null
+     */
+    private $existing_config_hashes = null;
+
+    /**
+     * Cached map of existing preset titles.
+     *
+     * @var array<string, bool>|null
+     */
+    private $existing_titles = null;
+
+    /**
      * Maximum number of variations to produce per request.
      *
      * @var int
@@ -205,6 +219,76 @@ class MKL_PC_Layer_Variation_Expander
         $configuration = $this->config_builder->build_complete_configuration($combination);
 
         return $this->expand($configuration, $axis_layers, $args);
+    }
+
+    /**
+     * Check whether a combination or preset title already exists.
+     *
+     * @param array  $combination Combination payload.
+     * @param string $preset_name Optional preset title for fallback checks.
+     *
+     * @return bool
+     */
+    public function combination_is_already_saved(array $combination, $preset_name = '')
+    {
+        $this->ensure_existing_cache();
+
+        $hash = $this->build_config_hash($combination);
+
+        if ($hash && isset($this->existing_config_hashes[$hash])) {
+            return true;
+        }
+
+        if ($hash && $this->preset_saver->preset_configuration_exists($combination)) {
+            $this->existing_config_hashes[$hash] = true;
+            if ($preset_name !== '') {
+                $this->existing_titles[$this->normalise_title_key($preset_name)] = true;
+            }
+            return true;
+        }
+
+        if ($preset_name !== '') {
+            $title_key = $this->normalise_title_key($preset_name);
+            if (isset($this->existing_titles[$title_key])) {
+                return true;
+            }
+
+            $existing = get_posts([
+                'post_type' => 'mkl_pc_configuration',
+                'post_status' => 'preset',
+                'post_parent' => $this->product_id,
+                'title' => $preset_name,
+                'posts_per_page' => 1,
+                'fields' => 'ids',
+            ]);
+
+            if (! empty($existing)) {
+                $this->existing_titles[$title_key] = true;
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * Mark a combination/title as known so subsequent duplicate checks are instantaneous.
+     *
+     * @param array  $combination Combination payload.
+     * @param string $preset_name Preset title.
+     */
+    public function register_combination(array $combination, $preset_name = '')
+    {
+        $this->ensure_existing_cache();
+
+        $hash = $this->build_config_hash($combination);
+        if ($hash) {
+            $this->existing_config_hashes[$hash] = true;
+        }
+
+        if ($preset_name !== '') {
+            $this->existing_titles[$this->normalise_title_key($preset_name)] = true;
+        }
     }
 
     /**
@@ -392,19 +476,19 @@ class MKL_PC_Layer_Variation_Expander
             }
 
             $combination = array_values($combined);
+            $preset_name = $this->preset_saver->generate_preset_name($combination, []);
 
             if (! $this->validator->validate_combination($combination)) {
                 $state['skipped']['invalid']++;
                 return;
             }
 
-            if ($options['skip_existing'] && $this->preset_saver->preset_configuration_exists($combination)) {
+            if ($options['skip_existing'] && $this->combination_is_already_saved($combination, $preset_name)) {
                 $state['skipped']['duplicate']++;
                 return;
             }
 
             $expanded_configuration = $this->config_builder->build_complete_configuration($combination);
-            $preset_name = $this->preset_saver->generate_preset_name($combination, []);
 
             $state['variations'][] = [
                 'base_combination' => $combination,
@@ -412,6 +496,8 @@ class MKL_PC_Layer_Variation_Expander
                 'expanded_configuration' => $expanded_configuration,
                 'is_base' => $is_base_selection,
             ];
+
+            $this->register_combination($combination, $preset_name);
 
             if (count($state['variations']) >= $limit) {
                 $state['limit_reached'] = true;
@@ -462,6 +548,116 @@ class MKL_PC_Layer_Variation_Expander
         }
 
         return true;
+    }
+
+    /**
+     * Ensure duplicate lookup caches are populated.
+     */
+    private function ensure_existing_cache()
+    {
+        if ($this->existing_config_hashes !== null && $this->existing_titles !== null) {
+            return;
+        }
+
+        if ($this->existing_config_hashes === null || $this->existing_titles === null) {
+            $this->existing_config_hashes = [];
+            $this->existing_titles = [];
+
+            global $wpdb;
+
+            $rows = $wpdb->get_results(
+                $wpdb->prepare(
+                    "SELECT p.post_title, hash.meta_value AS config_hash
+                     FROM {$wpdb->posts} p
+                     INNER JOIN {$wpdb->postmeta} prod
+                        ON prod.post_id = p.ID
+                       AND prod.meta_key = '_product_id'
+                     LEFT JOIN {$wpdb->postmeta} hash
+                        ON hash.post_id = p.ID
+                       AND hash.meta_key = '_config_hash'
+                     WHERE prod.meta_value = %d
+                       AND p.post_type = 'mkl_pc_configuration'
+                       AND p.post_status = 'preset'",
+                    $this->product_id
+                ),
+                ARRAY_A
+            );
+
+            if (is_array($rows)) {
+                foreach ($rows as $row) {
+                    if (! empty($row['config_hash'])) {
+                        $this->existing_config_hashes[$row['config_hash']] = true;
+                    }
+
+                    if (! empty($row['post_title'])) {
+                        $this->existing_titles[$this->normalise_title_key($row['post_title'])] = true;
+                    }
+                }
+            }
+        }
+    }
+
+    /**
+     * Build a configuration hash mirroring preset saver logic.
+     *
+     * @param array $combination Combination payload.
+     *
+     * @return string
+     */
+    private function build_config_hash(array $combination)
+    {
+        if (empty($combination)) {
+            return '';
+        }
+
+        $sorted = $combination;
+
+        usort($sorted, function ($a, $b) {
+            $a_id = isset($a['layer_id']) ? (int) $a['layer_id'] : 0;
+            $b_id = isset($b['layer_id']) ? (int) $b['layer_id'] : 0;
+
+            return $a_id <=> $b_id;
+        });
+
+        $parts = [];
+
+        foreach ($sorted as $choice) {
+            if (! isset($choice['layer_id']) || ! isset($choice['choice_id'])) {
+                continue;
+            }
+
+            if ($choice['choice_id'] === null) {
+                continue;
+            }
+
+            $parts[] = (int) $choice['layer_id'] . ':' . (string) $choice['choice_id'];
+        }
+
+        if (empty($parts)) {
+            return '';
+        }
+
+        return md5(implode('|', $parts));
+    }
+
+    /**
+     * Normalise title to lowercase key for caching.
+     *
+     * @param string $title Preset title.
+     *
+     * @return string
+     */
+    private function normalise_title_key($title)
+    {
+        $key = wp_strip_all_tags($title);
+
+        if (function_exists('mb_strtolower')) {
+            $key = mb_strtolower($key, 'UTF-8');
+        } else {
+            $key = strtolower($key);
+        }
+
+        return $key;
     }
 }
 
