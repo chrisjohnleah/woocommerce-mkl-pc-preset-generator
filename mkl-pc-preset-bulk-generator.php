@@ -58,6 +58,12 @@ class MKL_PC_Preset_Bulk_Generator
             return;
         }
 
+        // Prevent MKL PC from loading all presets into memory on preset admin page
+        // The preset admin loads ALL presets into JavaScript via wp_localize_script
+        // which causes 512MB+ memory exhaustion with thousands of presets
+        // We intercept the WP_Query before it executes and return empty array
+        add_action('mkl_pc_scripts_product_page_after', [$this, 'prevent_preset_loading'], 1);
+
         // Load includes
         require_once MKL_PC_PRESET_GENERATOR_PATH . 'includes/class-combination-generator.php';
         require_once MKL_PC_PRESET_GENERATOR_PATH . 'includes/class-smart-combination-generator.php';
@@ -71,6 +77,41 @@ class MKL_PC_Preset_Bulk_Generator
 
         // Initialise components
         MKL_PC_Preset_Generator_Admin_UI::instance();
+    }
+
+    /**
+     * Prevent MKL PC from loading all presets into JavaScript
+     * This causes memory issues with thousands of presets
+     */
+    public function prevent_preset_loading()
+    {
+        if (! isset($_REQUEST['pc-presets-admin'])) {
+            return;
+        }
+
+        // Intercept the get_posts query that loads all presets
+        // and return empty array to prevent memory exhaustion
+        add_filter('posts_pre_query', function ($posts, $query) {
+            // Only intercept if this is a preset configuration query
+            if (isset($query->query_vars['post_type']) && 
+                $query->query_vars['post_type'] === 'mkl_pc_configuration' &&
+                isset($query->query_vars['post_status']) &&
+                (is_array($query->query_vars['post_status']) && in_array('preset', $query->query_vars['post_status'], true) ||
+                 $query->query_vars['post_status'] === 'preset')) {
+                
+                // Check if this is being called from the MKL PC preset admin script enqueue
+                $backtrace = debug_backtrace(DEBUG_BACKTRACE_IGNORE_ARGS, 10);
+                foreach ($backtrace as $trace) {
+                    if (isset($trace['function']) && $trace['function'] === 'add_scripts' &&
+                        isset($trace['class']) && $trace['class'] === 'MKL_PC_Presets_Admin') {
+                        // Return empty array to prevent loading all presets
+                        return [];
+                    }
+                }
+            }
+            
+            return $posts;
+        }, 10, 2);
     }
 
     /**
