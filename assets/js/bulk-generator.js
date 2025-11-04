@@ -91,7 +91,6 @@
         var $rate = $container.find('[data-live="rate"]');
         var $avgApply = $container.find('[data-live="avg-apply"]');
         var $avgSave = $container.find('[data-live="avg-save"]');
-        var $asyncThumbs = $container.find('[data-live="async-thumbs"]');
         var $skipped = $container.find('[data-live="skipped-duplicates"]');
         var $logList = $container.find('[data-live-log]');
         var $variationsPanel = $container.find('#mkl-pc-variations-panel');
@@ -692,7 +691,6 @@
             $rate.text("0");
             $avgApply.text("-");
             $avgSave.text("-");
-            $asyncThumbs.text("0");
             if ($skipped.length) {
                 $skipped.text("0");
             }
@@ -773,7 +771,6 @@
                 $rate.text("0");
                 $avgApply.text("-");
                 $avgSave.text("-");
-                $asyncThumbs.text("0");
                 if ($skipped.length) {
                     $skipped.text("0");
                 }
@@ -804,11 +801,6 @@
                 runMetrics.saveDurations.length
                     ? Math.round(average(runMetrics.saveDurations)) + " ms"
                     : "-",
-            );
-            $asyncThumbs.text(
-                runMetrics.asyncThumbnails
-                    ? runMetrics.asyncThumbnails.toString()
-                    : "0",
             );
             if ($skipped.length) {
                 $skipped.text(

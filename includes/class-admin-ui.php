@@ -476,10 +476,6 @@ class MKL_PC_Preset_Generator_Admin_UI
                                 <div class="label"><?php esc_html_e('Avg Save', 'mkl-pc-preset-generator'); ?></div>
                             </div>
                             <div class="mkl-pc-bulk-live-card">
-                                <div class="value" data-live="async-thumbs">0</div>
-                                <div class="label"><?php esc_html_e('Async Thumbs', 'mkl-pc-preset-generator'); ?></div>
-                            </div>
-                            <div class="mkl-pc-bulk-live-card">
                                 <div class="value" data-live="skipped-duplicates">0</div>
                                 <div class="label"><?php esc_html_e('Skipped (Dup)', 'mkl-pc-preset-generator'); ?></div>
                             </div>
