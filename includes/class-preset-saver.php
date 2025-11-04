@@ -333,45 +333,70 @@ class MKL_PC_Preset_Saver
 
     /**
      * Delete all presets for this product
+     * Uses batched deletion to avoid memory exhaustion with thousands of presets.
      * 
      * @return int Number of presets deleted
      */
     public function delete_all_presets()
     {
-        $presets = get_posts([
-            'post_type' => 'mkl_pc_configuration',
-            'post_status' => 'preset',
-            'post_parent' => $this->product_id,
-            'posts_per_page' => -1,
-            'fields' => 'ids',
-        ]);
-
         $deleted = 0;
-        foreach ($presets as $preset_id) {
-            if (wp_delete_post($preset_id, true)) {
-                $deleted++;
+        $batch_size = 100;
+        
+        do {
+            $presets = get_posts([
+                'post_type' => 'mkl_pc_configuration',
+                'post_status' => 'preset',
+                'post_parent' => $this->product_id,
+                'posts_per_page' => $batch_size,
+                'fields' => 'ids',
+                'orderby' => 'ID',
+                'order' => 'ASC',
+            ]);
+
+            if (empty($presets)) {
+                break;
             }
-        }
+
+            $batch_count = count($presets);
+            
+            foreach ($presets as $preset_id) {
+                if (wp_delete_post($preset_id, true)) {
+                    $deleted++;
+                }
+            }
+            
+            // Free memory after each batch
+            unset($presets);
+            
+        } while ($batch_count === $batch_size);
 
         return $deleted;
     }
 
     /**
      * Get count of existing presets for this product
+     * Uses direct SQL COUNT query to avoid loading all preset IDs into memory.
      * 
      * @return int
      */
     public function get_preset_count()
     {
-        $presets = get_posts([
-            'post_type' => 'mkl_pc_configuration',
-            'post_status' => 'preset',
-            'post_parent' => $this->product_id,
-            'posts_per_page' => -1,
-            'fields' => 'ids',
-        ]);
+        global $wpdb;
+        
+        $count = $wpdb->get_var(
+            $wpdb->prepare(
+                "SELECT COUNT(ID) 
+                 FROM {$wpdb->posts} 
+                 WHERE post_parent = %d 
+                   AND post_type = %s 
+                   AND post_status = %s",
+                $this->product_id,
+                'mkl_pc_configuration',
+                'preset'
+            )
+        );
 
-        return count($presets);
+        return (int) $count;
     }
 
     /**

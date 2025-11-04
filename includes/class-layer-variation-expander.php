@@ -552,6 +552,7 @@ class MKL_PC_Layer_Variation_Expander
 
     /**
      * Ensure duplicate lookup caches are populated.
+     * Uses batched queries to avoid memory exhaustion with thousands of presets.
      */
     private function ensure_existing_cache()
     {
@@ -565,35 +566,52 @@ class MKL_PC_Layer_Variation_Expander
 
             global $wpdb;
 
-            $rows = $wpdb->get_results(
-                $wpdb->prepare(
-                    "SELECT p.post_title, hash.meta_value AS config_hash
-                     FROM {$wpdb->posts} p
-                     INNER JOIN {$wpdb->postmeta} prod
-                        ON prod.post_id = p.ID
-                       AND prod.meta_key = '_product_id'
-                     LEFT JOIN {$wpdb->postmeta} hash
-                        ON hash.post_id = p.ID
-                       AND hash.meta_key = '_config_hash'
-                     WHERE prod.meta_value = %d
-                       AND p.post_type = 'mkl_pc_configuration'
-                       AND p.post_status = 'preset'",
-                    $this->product_id
-                ),
-                ARRAY_A
-            );
+            // Use batched queries to avoid loading thousands of rows into memory at once
+            $batch_size = 1000;
+            $offset = 0;
+            
+            do {
+                $rows = $wpdb->get_results(
+                    $wpdb->prepare(
+                        "SELECT p.post_title, hash.meta_value AS config_hash
+                         FROM {$wpdb->posts} p
+                         INNER JOIN {$wpdb->postmeta} prod
+                            ON prod.post_id = p.ID
+                           AND prod.meta_key = '_product_id'
+                         LEFT JOIN {$wpdb->postmeta} hash
+                            ON hash.post_id = p.ID
+                           AND hash.meta_key = '_config_hash'
+                         WHERE prod.meta_value = %d
+                           AND p.post_type = 'mkl_pc_configuration'
+                           AND p.post_status = 'preset'
+                         ORDER BY p.ID ASC
+                         LIMIT %d OFFSET %d",
+                        $this->product_id,
+                        $batch_size,
+                        $offset
+                    ),
+                    ARRAY_A
+                );
 
-            if (is_array($rows)) {
-                foreach ($rows as $row) {
-                    if (! empty($row['config_hash'])) {
-                        $this->existing_config_hashes[$row['config_hash']] = true;
-                    }
+                if (is_array($rows) && ! empty($rows)) {
+                    foreach ($rows as $row) {
+                        if (! empty($row['config_hash'])) {
+                            $this->existing_config_hashes[$row['config_hash']] = true;
+                        }
 
-                    if (! empty($row['post_title'])) {
-                        $this->existing_titles[$this->normalise_title_key($row['post_title'])] = true;
+                        if (! empty($row['post_title'])) {
+                            $this->existing_titles[$this->normalise_title_key($row['post_title'])] = true;
+                        }
                     }
+                    
+                    // Free memory after processing each batch
+                    unset($rows);
+                    
+                    $offset += $batch_size;
+                } else {
+                    break;
                 }
-            }
+            } while (true);
         }
     }
 
