@@ -223,6 +223,7 @@ class MKL_PC_Layer_Variation_Expander
 
     /**
      * Check whether a combination or preset title already exists.
+     * Only loads cache if this is actually called (lazy loading).
      *
      * @param array  $combination Combination payload.
      * @param string $preset_name Optional preset title for fallback checks.
@@ -231,28 +232,38 @@ class MKL_PC_Layer_Variation_Expander
      */
     public function combination_is_already_saved(array $combination, $preset_name = '')
     {
-        $this->ensure_existing_cache();
-
         $hash = $this->build_config_hash($combination);
 
-        if ($hash && isset($this->existing_config_hashes[$hash])) {
+        // Quick check in cache first (if already loaded)
+        if ($this->existing_config_hashes !== null && $hash && isset($this->existing_config_hashes[$hash])) {
             return true;
         }
 
+        if ($preset_name !== '' && $this->existing_titles !== null) {
+            $title_key = $this->normalise_title_key($preset_name);
+            if (isset($this->existing_titles[$title_key])) {
+                return true;
+            }
+        }
+
+        // If cache not loaded, do direct database check (faster for single checks)
         if ($hash && $this->preset_saver->preset_configuration_exists($combination)) {
+            // Lazily initialize cache if needed
+            if ($this->existing_config_hashes === null) {
+                $this->existing_config_hashes = [];
+            }
             $this->existing_config_hashes[$hash] = true;
+            
             if ($preset_name !== '') {
+                if ($this->existing_titles === null) {
+                    $this->existing_titles = [];
+                }
                 $this->existing_titles[$this->normalise_title_key($preset_name)] = true;
             }
             return true;
         }
 
         if ($preset_name !== '') {
-            $title_key = $this->normalise_title_key($preset_name);
-            if (isset($this->existing_titles[$title_key])) {
-                return true;
-            }
-
             $existing = get_posts([
                 'post_type' => 'mkl_pc_configuration',
                 'post_status' => 'preset',
@@ -263,7 +274,10 @@ class MKL_PC_Layer_Variation_Expander
             ]);
 
             if (! empty($existing)) {
-                $this->existing_titles[$title_key] = true;
+                if ($this->existing_titles === null) {
+                    $this->existing_titles = [];
+                }
+                $this->existing_titles[$this->normalise_title_key($preset_name)] = true;
                 return true;
             }
         }
@@ -279,7 +293,13 @@ class MKL_PC_Layer_Variation_Expander
      */
     public function register_combination(array $combination, $preset_name = '')
     {
-        $this->ensure_existing_cache();
+        // Lazily initialize caches if not already done
+        if ($this->existing_config_hashes === null) {
+            $this->existing_config_hashes = [];
+        }
+        if ($this->existing_titles === null) {
+            $this->existing_titles = [];
+        }
 
         $hash = $this->build_config_hash($combination);
         if ($hash) {
@@ -550,70 +570,6 @@ class MKL_PC_Layer_Variation_Expander
         return true;
     }
 
-    /**
-     * Ensure duplicate lookup caches are populated.
-     * Uses batched queries to avoid memory exhaustion with thousands of presets.
-     */
-    private function ensure_existing_cache()
-    {
-        if ($this->existing_config_hashes !== null && $this->existing_titles !== null) {
-            return;
-        }
-
-        if ($this->existing_config_hashes === null || $this->existing_titles === null) {
-            $this->existing_config_hashes = [];
-            $this->existing_titles = [];
-
-            global $wpdb;
-
-            // Use batched queries to avoid loading thousands of rows into memory at once
-            $batch_size = 1000;
-            $offset = 0;
-            
-            do {
-                $rows = $wpdb->get_results(
-                    $wpdb->prepare(
-                        "SELECT p.post_title, hash.meta_value AS config_hash
-                         FROM {$wpdb->posts} p
-                         INNER JOIN {$wpdb->postmeta} prod
-                            ON prod.post_id = p.ID
-                           AND prod.meta_key = '_product_id'
-                         LEFT JOIN {$wpdb->postmeta} hash
-                            ON hash.post_id = p.ID
-                           AND hash.meta_key = '_config_hash'
-                         WHERE prod.meta_value = %d
-                           AND p.post_type = 'mkl_pc_configuration'
-                           AND p.post_status = 'preset'
-                         ORDER BY p.ID ASC
-                         LIMIT %d OFFSET %d",
-                        $this->product_id,
-                        $batch_size,
-                        $offset
-                    ),
-                    ARRAY_A
-                );
-
-                if (is_array($rows) && ! empty($rows)) {
-                    foreach ($rows as $row) {
-                        if (! empty($row['config_hash'])) {
-                            $this->existing_config_hashes[$row['config_hash']] = true;
-                        }
-
-                        if (! empty($row['post_title'])) {
-                            $this->existing_titles[$this->normalise_title_key($row['post_title'])] = true;
-                        }
-                    }
-                    
-                    // Free memory after processing each batch
-                    unset($rows);
-                    
-                    $offset += $batch_size;
-                } else {
-                    break;
-                }
-            } while (true);
-        }
-    }
 
     /**
      * Build a configuration hash mirroring preset saver logic.
