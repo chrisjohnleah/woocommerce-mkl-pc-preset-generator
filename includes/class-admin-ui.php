@@ -575,6 +575,7 @@ class MKL_PC_Preset_Generator_Admin_UI
 
     /**
      * AJAX: Snapshot of existing presets for a product.
+     * Uses batched queries to avoid memory exhaustion with thousands of presets.
      */
     public function ajax_get_preset_snapshot()
     {
@@ -592,11 +593,12 @@ class MKL_PC_Preset_Generator_Admin_UI
 
         global $wpdb;
 
-        $include_titles = true;
-        if (isset($_POST['include_titles'])) {
-            $include_titles = filter_var($_POST['include_titles'], FILTER_VALIDATE_BOOLEAN);
+        $include_hashes = true;
+        if (isset($_POST['include_hashes'])) {
+            $include_hashes = filter_var($_POST['include_hashes'], FILTER_VALIDATE_BOOLEAN);
         }
 
+        // Fast count query
         $total = (int) $wpdb->get_var(
             $wpdb->prepare(
                 "SELECT COUNT(ID) FROM {$wpdb->posts} WHERE post_parent = %d AND post_type = %s AND post_status = %s",
@@ -606,32 +608,62 @@ class MKL_PC_Preset_Generator_Admin_UI
             )
         );
 
+        $hashes = [];
         $titles = [];
-        if ($include_titles && $total > 0) {
-            $rows = $wpdb->get_results(
-                $wpdb->prepare(
-                    "SELECT post_title FROM {$wpdb->posts} WHERE post_parent = %d AND post_type = %s AND post_status = %s",
-                    $product_id,
-                    'mkl_pc_configuration',
-                    'preset'
-                ),
-                ARRAY_A
-            );
+        
+        if ($include_hashes && $total > 0) {
+            // Use batched queries to avoid memory exhaustion
+            $batch_size = 1000;
+            $offset = 0;
+            
+            do {
+                $rows = $wpdb->get_results(
+                    $wpdb->prepare(
+                        "SELECT p.post_title, hash.meta_value AS config_hash
+                         FROM {$wpdb->posts} p
+                         LEFT JOIN {$wpdb->postmeta} hash
+                            ON hash.post_id = p.ID
+                           AND hash.meta_key = '_config_hash'
+                         WHERE p.post_parent = %d
+                           AND p.post_type = %s
+                           AND p.post_status = %s
+                         ORDER BY p.ID ASC
+                         LIMIT %d OFFSET %d",
+                        $product_id,
+                        'mkl_pc_configuration',
+                        'preset',
+                        $batch_size,
+                        $offset
+                    ),
+                    ARRAY_A
+                );
 
-            if (is_array($rows)) {
-                foreach ($rows as $row) {
-                    if (isset($row['post_title'])) {
-                        $titles[] = $row['post_title'];
+                if (is_array($rows) && ! empty($rows)) {
+                    foreach ($rows as $row) {
+                        if (! empty($row['config_hash'])) {
+                            $hashes[] = $row['config_hash'];
+                        }
+                        if (! empty($row['post_title'])) {
+                            $titles[] = $row['post_title'];
+                        }
                     }
+                    
+                    // Free memory after each batch
+                    unset($rows);
+                    
+                    $offset += $batch_size;
+                } else {
+                    break;
                 }
-            }
+            } while (true);
         }
 
         wp_send_json_success([
             'product_id' => $product_id,
             'count' => $total,
+            'hashes' => array_values($hashes),
             'titles' => array_values($titles),
-            'titles_included' => $include_titles,
+            'hashes_included' => $include_hashes,
         ]);
     }
 

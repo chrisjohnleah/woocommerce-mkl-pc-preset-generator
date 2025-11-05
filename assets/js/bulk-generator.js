@@ -533,7 +533,7 @@
                 action: "mkl_pc_get_preset_snapshot",
                 nonce: MKL_PC_BulkGenerator.nonce,
                 product_id: productId,
-                include_titles: 1,
+                include_hashes: 1,
             },
         })
             .done(function (response) {
@@ -554,7 +554,8 @@
                     productId: productId,
                     count: totalPresets,
                     titles: new Set(),
-                    titlesIncluded: !!response.data.titles_included,
+                    hashes: new Set(),
+                    titlesIncluded: !!response.data.hashes_included,
                 };
 
                 knownPresetTitles = presetSnapshot.titles;
@@ -567,6 +568,15 @@
                     response.data.titles.forEach(function (t) {
                         if (typeof t === "string" && t.trim().length) {
                             knownPresetTitles.add(t.trim().toLowerCase());
+                        }
+                    });
+                }
+
+                // Seed known configuration hashes for more reliable duplicate detection
+                if (response.data.hashes && Array.isArray(response.data.hashes)) {
+                    response.data.hashes.forEach(function (h) {
+                        if (typeof h === "string" && h.trim().length) {
+                            presetSnapshot.hashes.add(h.trim());
                         }
                     });
                 }
@@ -1838,6 +1848,57 @@
             );
         }
 
+        /**
+         * Generate configuration hash matching PHP backend logic
+         * Mirrors MKL_PC_Preset_Saver::hash_combination()
+         */
+        function generateConfigHash(configuration) {
+            if (!Array.isArray(configuration) || !configuration.length) {
+                return null;
+            }
+
+            // Extract layer_id and choice_id pairs, sort by layer_id
+            var pairs = [];
+            configuration.forEach(function (layer) {
+                var layerId = layer.layer_id || layer.layerId;
+                var choiceId = layer.choice_id || layer.choiceId;
+                
+                if (layerId && choiceId) {
+                    pairs.push({ layer: parseInt(layerId, 10), choice: parseInt(choiceId, 10) });
+                }
+            });
+
+            if (!pairs.length) {
+                return null;
+            }
+
+            // Sort by layer_id
+            pairs.sort(function (a, b) {
+                return a.layer - b.layer;
+            });
+
+            // Build string like "12:45|13:67|14:89"
+            var parts = pairs.map(function (pair) {
+                return pair.layer + ':' + pair.choice;
+            });
+
+            // Generate MD5 hash (use a simple hash if MD5 not available)
+            var hashInput = parts.join('|');
+            
+            // Simple hash fallback (not MD5, but consistent)
+            var simpleHash = function (str) {
+                var hash = 0;
+                for (var i = 0; i < str.length; i++) {
+                    var char = str.charCodeAt(i);
+                    hash = ((hash << 5) - hash) + char;
+                    hash = hash & hash;
+                }
+                return Math.abs(hash).toString(16);
+            };
+
+            return simpleHash(hashInput);
+        }
+
         function savePresetConfiguration(
             productId,
             presetName,
@@ -1857,6 +1918,29 @@
             var normalizedName = generatedName ? generatedName.trim() : "";
             var titleKey = normalizedName ? normalizedName.toLowerCase() : "";
 
+            // Check for duplicate configuration hash first (more reliable than title)
+            var configHash = generateConfigHash(configuration);
+            if (configHash && presetSnapshot && presetSnapshot.hashes && presetSnapshot.hashes.has(configHash)) {
+                setStatus(
+                    "Skipped duplicate configuration.",
+                    "warn",
+                );
+                appendLog(
+                    "Skipped duplicate configuration: " + normalizedName,
+                    "warn",
+                    { force: true },
+                );
+                if (runMetrics) {
+                    runMetrics.skippedDuplicates =
+                        (runMetrics.skippedDuplicates || 0) + 1;
+                    scheduleStatsUpdate();
+                }
+                pendingTargetState = null;
+                setTimeout(callback, 120);
+                return;
+            }
+
+            // Fallback to title check (less reliable but kept for backward compatibility)
             if (titleKey && knownPresetTitles.has(titleKey)) {
                 setStatus(
                     "Skipped duplicate preset title.",
@@ -1953,8 +2037,12 @@
                             updatedExistingTotal = (MKL_PC_BulkGenerator.existing_total || 0) + 1;
                         }
 
+                        // Add to known titles and hashes to prevent duplicates
                         if (titleKey) {
                             knownPresetTitles.add(titleKey);
+                        }
+                        if (configHash && presetSnapshot && presetSnapshot.hashes) {
+                            presetSnapshot.hashes.add(configHash);
                         }
 
                         if (pendingTargetState && typeof pendingTargetState.forEach === "function") {
