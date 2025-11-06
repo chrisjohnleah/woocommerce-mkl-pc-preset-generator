@@ -80,6 +80,7 @@
         var $container = $(".mkl-pc-bulk-generator");
         var $generateBtn = $container.find(".mkl-pc-generate-btn");
         var $deleteBtn = $container.find(".mkl-pc-delete-all-btn");
+        var $cleanupBtn = $container.find(".mkl-pc-cleanup-orphaned-btn");
         var $progress = $container.find(".mkl-pc-bulk-generator-progress");
         var $progressBar = $progress.find(".progress-bar");
         var $progressStatus = $progress.find(".progress-status");
@@ -1378,8 +1379,6 @@
         });
 
         // Cleanup orphaned presets button
-        var $cleanupBtn = $container.find(".mkl-pc-cleanup-orphaned-btn");
-        
         $cleanupBtn.on("click", function () {
             var productId = $(this).data("product-id");
 
