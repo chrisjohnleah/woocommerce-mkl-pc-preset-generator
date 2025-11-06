@@ -1377,6 +1377,69 @@
             startRun(productId);
         });
 
+        // Cleanup orphaned presets button
+        var $cleanupBtn = $container.find(".mkl-pc-cleanup-orphaned-btn");
+        
+        $cleanupBtn.on("click", function () {
+            var productId = $(this).data("product-id");
+
+            // Confirm cleanup
+            if (!confirm("Are you sure you want to delete all presets without images? This cannot be undone.")) {
+                return;
+            }
+
+            $cleanupBtn.prop("disabled", true);
+            setStatus("Cleaning up orphaned presets...", "warn");
+            appendLog("Scanning for presets without images...", "warn", { force: true });
+
+            $.ajax({
+                url: MKL_PC_BulkGenerator.ajax_url,
+                type: "POST",
+                data: {
+                    action: "mkl_pc_cleanup_orphaned_presets",
+                    nonce: MKL_PC_BulkGenerator.nonce,
+                    product_id: productId,
+                },
+                success: function (response) {
+                    if (response.success) {
+                        var msg = "Checked " + response.data.checked + " presets, deleted " + 
+                                  response.data.deleted + " without images";
+                        
+                        if (response.data.errors > 0) {
+                            msg += " (" + response.data.errors + " errors)";
+                        }
+                        
+                        alert(msg);
+                        
+                        appendLog(msg, "success", { force: true });
+                        setStatus("Cleanup complete.", "success");
+
+                        // Refresh preset snapshot to update count
+                        requestPresetSnapshot({ force: true }).done(function (snapshot) {
+                            updateExistingStat(snapshot.count);
+                        });
+
+                        // Reload configurations list
+                        if (window.PC_Presets_Configurations) {
+                            window.PC_Presets_Configurations.reset();
+                        }
+                    } else {
+                        setStatus("Error: " + response.data.message, "error");
+                        appendLog("Cleanup failed: " + response.data.message, "error", { force: true });
+                        alert("Error: " + response.data.message);
+                    }
+                },
+                error: function () {
+                    setStatus("AJAX error during cleanup.", "error");
+                    appendLog("AJAX error during cleanup.", "error", { force: true });
+                    alert("AJAX error during cleanup.");
+                },
+                complete: function () {
+                    $cleanupBtn.prop("disabled", false);
+                },
+            });
+        });
+
         // Delete all button
         $deleteBtn.on("click", function () {
             var productId = $(this).data("product-id");

@@ -457,4 +457,101 @@ class MKL_PC_Preset_Saver
 
         return md5(implode('|', $parts));
     }
+
+    /**
+     * Clean up presets without images
+     * Deletes presets that don't have a featured image/thumbnail
+     * 
+     * @return array Stats about cleanup
+     */
+    public function cleanup_presets_without_images()
+    {
+        global $wpdb;
+        
+        $stats = [
+            'checked' => 0,
+            'deleted' => 0,
+            'errors' => 0,
+        ];
+
+        // Find all presets for this product
+        $preset_ids = $wpdb->get_col(
+            $wpdb->prepare(
+                "SELECT ID FROM {$wpdb->posts} 
+                 WHERE post_parent = %d 
+                   AND post_type = %s 
+                   AND post_status = %s
+                 ORDER BY ID ASC",
+                $this->product_id,
+                'mkl_pc_configuration',
+                'preset'
+            )
+        );
+
+        if (empty($preset_ids)) {
+            return $stats;
+        }
+
+        $stats['checked'] = count($preset_ids);
+
+        // Check each preset for thumbnail
+        foreach ($preset_ids as $preset_id) {
+            $thumbnail_id = get_post_thumbnail_id($preset_id);
+            
+            // If no thumbnail, or thumbnail doesn't exist, delete the preset
+            if (! $thumbnail_id || ! get_post($thumbnail_id)) {
+                $deleted = wp_delete_post($preset_id, true); // true = force delete (skip trash)
+                
+                if ($deleted) {
+                    $stats['deleted']++;
+                    error_log("Deleted orphaned preset #$preset_id (no image)");
+                } else {
+                    $stats['errors']++;
+                    error_log("Failed to delete orphaned preset #$preset_id");
+                }
+            }
+        }
+
+        return $stats;
+    }
+
+    /**
+     * Get count of presets without images
+     * 
+     * @return int
+     */
+    public function count_presets_without_images()
+    {
+        global $wpdb;
+        
+        // Find all presets for this product
+        $preset_ids = $wpdb->get_col(
+            $wpdb->prepare(
+                "SELECT ID FROM {$wpdb->posts} 
+                 WHERE post_parent = %d 
+                   AND post_type = %s 
+                   AND post_status = %s",
+                $this->product_id,
+                'mkl_pc_configuration',
+                'preset'
+            )
+        );
+
+        if (empty($preset_ids)) {
+            return 0;
+        }
+
+        $count = 0;
+
+        // Check each preset for thumbnail
+        foreach ($preset_ids as $preset_id) {
+            $thumbnail_id = get_post_thumbnail_id($preset_id);
+            
+            if (! $thumbnail_id || ! get_post($thumbnail_id)) {
+                $count++;
+            }
+        }
+
+        return $count;
+    }
 }
