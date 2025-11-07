@@ -421,10 +421,10 @@ class MKL_PC_Preset_Generator_Admin_UI
                         <?php esc_html_e('Delete All Presets', 'mkl-pc-preset-generator'); ?>
                     </button>
                     <button type="button" class="mkl-pc-cleanup-orphaned-btn warning" data-product-id="<?php echo esc_attr($product_id); ?>">
-                        <?php esc_html_e('Clean Up Orphaned Presets', 'mkl-pc-preset-generator'); ?>
+                        <?php esc_html_e('Delete Presets Without Images', 'mkl-pc-preset-generator'); ?>
                     </button>
                     <button type="button" class="mkl-pc-cleanup-invalid-btn warning" data-product-id="<?php echo esc_attr($product_id); ?>">
-                        <?php esc_html_e('Clean Up Invalid Presets', 'mkl-pc-preset-generator'); ?>
+                        <?php esc_html_e('Delete Invalid Presets', 'mkl-pc-preset-generator'); ?>
                     </button>
                     <button type="button" class="mkl-pc-stop-btn stop" disabled>
                         <?php esc_html_e('Stop Run', 'mkl-pc-preset-generator'); ?>
