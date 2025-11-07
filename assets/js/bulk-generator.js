@@ -1382,59 +1382,137 @@
         $cleanupBtn.on("click", function () {
             var productId = $(this).data("product-id");
 
-            // Confirm cleanup
-            if (!confirm("Are you sure you want to delete all presets without images? This cannot be undone.")) {
-                return;
-            }
-
             $cleanupBtn.prop("disabled", true);
-            setStatus("Cleaning up orphaned presets...", "warn");
-            appendLog("Scanning for presets without images...", "warn", { force: true });
+            setStatus("Scanning for orphaned presets...", "info");
+            appendLog("Scanning for presets without images...", "info", { force: true });
 
+            // Step 1: Get preview of orphaned presets
             $.ajax({
                 url: MKL_PC_BulkGenerator.ajax_url,
                 type: "POST",
                 data: {
-                    action: "mkl_pc_cleanup_orphaned_presets",
+                    action: "mkl_pc_preview_orphaned_presets",
                     nonce: MKL_PC_BulkGenerator.nonce,
                     product_id: productId,
                 },
                 success: function (response) {
-                    if (response.success) {
-                        var msg = "Checked " + response.data.checked + " presets, deleted " + 
-                                  response.data.deleted + " without images";
-                        
-                        if (response.data.errors > 0) {
-                            msg += " (" + response.data.errors + " errors)";
-                        }
-                        
-                        alert(msg);
-                        
-                        appendLog(msg, "success", { force: true });
-                        setStatus("Cleanup complete.", "success");
-
-                        // Refresh preset snapshot to update count
-                        requestPresetSnapshot({ force: true }).done(function (snapshot) {
-                            updateExistingStat(snapshot.count);
-                        });
-
-                        // Reload configurations list
-                        if (window.PC_Presets_Configurations) {
-                            window.PC_Presets_Configurations.reset();
-                        }
-                    } else {
-                        setStatus("Error: " + response.data.message, "error");
-                        appendLog("Cleanup failed: " + response.data.message, "error", { force: true });
-                        alert("Error: " + response.data.message);
+                    $cleanupBtn.prop("disabled", false);
+                    
+                    if (!response.success) {
+                        alert("Error: " + (response.data.message || "Unknown error"));
+                        setStatus("Scan failed.", "error");
+                        return;
                     }
+
+                    var orphaned = response.data.presets || [];
+                    var total = response.data.total || 0;
+
+                    if (total === 0) {
+                        alert("No orphaned presets found! All presets have images.");
+                        setStatus("No orphaned presets found.", "success");
+                        appendLog("All presets have images.", "success", { force: true });
+                        return;
+                    }
+
+                    // Build preview list
+                    var previewHtml = "<div style='max-height:400px;overflow-y:auto;margin:10px 0;'>";
+                    previewHtml += "<p style='margin-bottom:10px;'><strong>Found " + total + " preset(s) without images:</strong></p>";
+                    previewHtml += "<ul style='list-style:none;padding:0;margin:0;'>";
+                    
+                    orphaned.forEach(function(preset) {
+                        var reason = preset.reason === 'no_thumbnail' 
+                            ? 'No thumbnail assigned' 
+                            : 'Thumbnail #' + preset.thumbnail_id + ' missing';
+                        
+                        previewHtml += "<li style='padding:8px;margin:4px 0;background:#f9f9f9;border-left:3px solid #dc3545;'>";
+                        previewHtml += "<strong>ID " + preset.id + ":</strong> " + preset.title + "<br>";
+                        previewHtml += "<small style='color:#666;'>Reason: " + reason + " | Modified: " + preset.modified + "</small>";
+                        previewHtml += "</li>";
+                    });
+                    
+                    previewHtml += "</ul></div>";
+                    previewHtml += "<p><strong style='color:#dc3545;'>⚠️ This action cannot be undone!</strong></p>";
+
+                    // Show modal with preview and confirmation
+                    var modalHtml = "<div id='mkl-pc-cleanup-modal' style='position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:999999;display:flex;align-items:center;justify-content:center;'>";
+                    modalHtml += "<div style='background:white;padding:20px;border-radius:8px;max-width:600px;width:90%;box-shadow:0 4px 20px rgba(0,0,0,0.3);'>";
+                    modalHtml += "<h2 style='margin-top:0;'>Confirm Cleanup</h2>";
+                    modalHtml += previewHtml;
+                    modalHtml += "<div style='display:flex;gap:10px;justify-content:flex-end;margin-top:20px;'>";
+                    modalHtml += "<button id='mkl-pc-cleanup-cancel' class='button' style='padding:8px 16px;'>Cancel</button>";
+                    modalHtml += "<button id='mkl-pc-cleanup-confirm' class='button button-primary' style='background:#dc3545;border-color:#dc3545;padding:8px 16px;'>Delete " + total + " Preset(s)</button>";
+                    modalHtml += "</div></div></div>";
+
+                    $('body').append(modalHtml);
+
+                    // Cancel button
+                    $('#mkl-pc-cleanup-cancel').on('click', function() {
+                        $('#mkl-pc-cleanup-modal').remove();
+                        setStatus("Cleanup cancelled.", "info");
+                        appendLog("Cleanup cancelled by user.", "info", { force: true });
+                    });
+
+                    // Confirm button - Step 2: Actually delete
+                    $('#mkl-pc-cleanup-confirm').on('click', function() {
+                        $('#mkl-pc-cleanup-modal').remove();
+                        $cleanupBtn.prop("disabled", true);
+                        setStatus("Deleting orphaned presets...", "warn");
+                        appendLog("Deleting " + total + " orphaned presets...", "warn", { force: true });
+
+                        $.ajax({
+                            url: MKL_PC_BulkGenerator.ajax_url,
+                            type: "POST",
+                            data: {
+                                action: "mkl_pc_cleanup_orphaned_presets",
+                                nonce: MKL_PC_BulkGenerator.nonce,
+                                product_id: productId,
+                                confirm: true,
+                            },
+                            success: function (response) {
+                                if (response.success) {
+                                    var msg = "Checked " + response.data.checked + " presets, deleted " + 
+                                              response.data.deleted + " without images";
+                                    
+                                    if (response.data.errors > 0) {
+                                        msg += " (" + response.data.errors + " errors)";
+                                    }
+                                    
+                                    alert(msg);
+                                    
+                                    appendLog(msg, "success", { force: true });
+                                    setStatus("Cleanup complete.", "success");
+
+                                    // Refresh preset snapshot to update count
+                                    requestPresetSnapshot({ force: true }).done(function (snapshot) {
+                                        updateExistingStat(snapshot.count);
+                                    });
+
+                                    // Reload configurations list
+                                    if (window.PC_Presets_Configurations) {
+                                        window.PC_Presets_Configurations.reset();
+                                    }
+                                } else {
+                                    setStatus("Error: " + response.data.message, "error");
+                                    appendLog("Cleanup failed: " + response.data.message, "error", { force: true });
+                                    alert("Error: " + response.data.message);
+                                }
+                            },
+                            error: function () {
+                                setStatus("AJAX error during cleanup.", "error");
+                                appendLog("AJAX error during cleanup.", "error", { force: true });
+                                alert("AJAX error during cleanup.");
+                            },
+                            complete: function () {
+                                $cleanupBtn.prop("disabled", false);
+                            },
+                        });
+                    });
                 },
                 error: function () {
-                    setStatus("AJAX error during cleanup.", "error");
-                    appendLog("AJAX error during cleanup.", "error", { force: true });
-                    alert("AJAX error during cleanup.");
-                },
-                complete: function () {
                     $cleanupBtn.prop("disabled", false);
+                    setStatus("AJAX error during scan.", "error");
+                    appendLog("AJAX error during scan.", "error", { force: true });
+                    alert("AJAX error during scan.");
                 },
             });
         });

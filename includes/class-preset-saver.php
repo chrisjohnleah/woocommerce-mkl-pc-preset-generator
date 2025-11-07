@@ -554,4 +554,57 @@ class MKL_PC_Preset_Saver
 
         return $count;
     }
+
+    /**
+     * Get detailed list of presets without images
+     * Returns array of preset details for preview/confirmation
+     * 
+     * @return array Array of preset details
+     */
+    public function get_presets_without_images()
+    {
+        global $wpdb;
+        
+        // Find all presets for this product
+        $presets = $wpdb->get_results(
+            $wpdb->prepare(
+                "SELECT ID, post_title, post_date, post_modified 
+                 FROM {$wpdb->posts} 
+                 WHERE post_parent = %d 
+                   AND post_type = %s 
+                   AND post_status = %s
+                 ORDER BY post_modified DESC",
+                $this->product_id,
+                'mkl_pc_configuration',
+                'preset'
+            ),
+            ARRAY_A
+        );
+
+        if (empty($presets)) {
+            return [];
+        }
+
+        $orphaned = [];
+
+        // Check each preset for thumbnail and build details
+        foreach ($presets as $preset) {
+            $preset_id = (int) $preset['ID'];
+            $thumbnail_id = get_post_thumbnail_id($preset_id);
+            
+            // Check if preset has no thumbnail or thumbnail doesn't exist
+            if (! $thumbnail_id || ! get_post($thumbnail_id)) {
+                $orphaned[] = [
+                    'id' => $preset_id,
+                    'title' => $preset['post_title'],
+                    'created' => $preset['post_date'],
+                    'modified' => $preset['post_modified'],
+                    'thumbnail_id' => $thumbnail_id ? (int) $thumbnail_id : 0,
+                    'reason' => ! $thumbnail_id ? 'no_thumbnail' : 'thumbnail_missing',
+                ];
+            }
+        }
+
+        return $orphaned;
+    }
 }

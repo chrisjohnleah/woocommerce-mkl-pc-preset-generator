@@ -44,6 +44,7 @@ class MKL_PC_Preset_Generator_Admin_UI
         add_action('wp_ajax_mkl_pc_list_layers_choices', [$this, 'ajax_list_layers_choices']);
         add_action('wp_ajax_mkl_pc_save_expanded_preset', [$this, 'ajax_save_expanded_preset']);
         add_action('wp_ajax_mkl_pc_delete_all_presets', [$this, 'ajax_delete_all']);
+        add_action('wp_ajax_mkl_pc_preview_orphaned_presets', [$this, 'ajax_preview_orphaned_presets']);
         add_action('wp_ajax_mkl_pc_cleanup_orphaned_presets', [$this, 'ajax_cleanup_orphaned_presets']);
         add_action('wp_ajax_mkl_pc_generate_preset_thumbnail', [$this, 'ajax_generate_preset_thumbnail']);
 
@@ -1617,6 +1618,32 @@ class MKL_PC_Preset_Generator_Admin_UI
     }
 
     /**
+     * AJAX: Get list of orphaned presets (presets without images) for preview
+     */
+    public function ajax_preview_orphaned_presets()
+    {
+        check_ajax_referer('mkl_pc_bulk_generator', 'nonce');
+
+        if (! current_user_can('manage_woocommerce')) {
+            wp_send_json_error(['message' => __('Permission denied', 'mkl-pc-preset-generator')]);
+        }
+
+        $product_id = isset($_POST['product_id']) ? intval($_POST['product_id']) : 0;
+
+        if (! $product_id) {
+            wp_send_json_error(['message' => __('Invalid product ID', 'mkl-pc-preset-generator')]);
+        }
+
+        $saver = new MKL_PC_Preset_Saver($product_id);
+        $orphaned = $saver->get_presets_without_images();
+
+        wp_send_json_success([
+            'total' => count($orphaned),
+            'presets' => $orphaned,
+        ]);
+    }
+
+    /**
      * AJAX: Clean up orphaned presets (presets without images)
      */
     public function ajax_cleanup_orphaned_presets()
@@ -1631,6 +1658,12 @@ class MKL_PC_Preset_Generator_Admin_UI
 
         if (! $product_id) {
             wp_send_json_error(['message' => __('Invalid product ID', 'mkl-pc-preset-generator')]);
+        }
+
+        $confirm = isset($_POST['confirm']) ? filter_var($_POST['confirm'], FILTER_VALIDATE_BOOLEAN) : false;
+
+        if (! $confirm) {
+            wp_send_json_error(['message' => __('Confirmation required', 'mkl-pc-preset-generator')]);
         }
 
         $saver = new MKL_PC_Preset_Saver($product_id);
