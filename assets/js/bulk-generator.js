@@ -1481,17 +1481,12 @@
                                     alert(msg);
                                     
                                     appendLog(msg, "success", { force: true });
-                                    setStatus("Cleanup complete.", "success");
+                                    setStatus("Cleanup complete. Reloading page...", "success");
 
-                                    // Refresh preset snapshot to update count
-                                    requestPresetSnapshot({ force: true }).done(function (snapshot) {
-                                        updateExistingStat(snapshot.count);
-                                    });
-
-                                    // Reload configurations list
-                                    if (window.PC_Presets_Configurations) {
-                                        window.PC_Presets_Configurations.reset();
-                                    }
+                                    // Force page reload to refresh the preset list
+                                    setTimeout(function() {
+                                        window.location.reload();
+                                    }, 1500);
                                 } else {
                                     setStatus("Error: " + response.data.message, "error");
                                     appendLog("Cleanup failed: " + response.data.message, "error", { force: true });
@@ -1616,17 +1611,12 @@
                                     alert(msg);
                                     
                                     appendLog(msg, "success", { force: true });
-                                    setStatus("Cleanup complete.", "success");
+                                    setStatus("Cleanup complete. Reloading page...", "success");
 
-                                    // Refresh preset snapshot to update count
-                                    requestPresetSnapshot({ force: true }).done(function (snapshot) {
-                                        updateExistingStat(snapshot.count);
-                                    });
-
-                                    // Reload configurations list
-                                    if (window.PC_Presets_Configurations) {
-                                        window.PC_Presets_Configurations.reset();
-                                    }
+                                    // Force page reload to refresh the preset list
+                                    setTimeout(function() {
+                                        window.location.reload();
+                                    }, 1500);
                                 } else {
                                     setStatus("Error: " + response.data.message, "error");
                                     appendLog("Cleanup failed: " + response.data.message, "error", { force: true });
