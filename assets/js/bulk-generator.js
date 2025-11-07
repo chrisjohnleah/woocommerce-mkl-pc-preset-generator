@@ -81,6 +81,7 @@
         var $generateBtn = $container.find(".mkl-pc-generate-btn");
         var $deleteBtn = $container.find(".mkl-pc-delete-all-btn");
         var $cleanupBtn = $container.find(".mkl-pc-cleanup-orphaned-btn");
+        var $cleanupInvalidBtn = $container.find(".mkl-pc-cleanup-invalid-btn");
         var $progress = $container.find(".mkl-pc-bulk-generator-progress");
         var $progressBar = $progress.find(".progress-bar");
         var $progressStatus = $progress.find(".progress-status");
@@ -1510,6 +1511,141 @@
                 },
                 error: function () {
                     $cleanupBtn.prop("disabled", false);
+                    setStatus("AJAX error during scan.", "error");
+                    appendLog("AJAX error during scan.", "error", { force: true });
+                    alert("AJAX error during scan.");
+                },
+            });
+        });
+
+        // Cleanup invalid presets button (duplicate layers, empty configs)
+        $cleanupInvalidBtn.on("click", function () {
+            var productId = $(this).data("product-id");
+
+            $cleanupInvalidBtn.prop("disabled", true);
+            setStatus("Scanning for invalid presets...", "info");
+            appendLog("Scanning for presets with invalid configurations...", "info", { force: true });
+
+            // Step 1: Get preview of invalid presets
+            $.ajax({
+                url: MKL_PC_BulkGenerator.ajax_url,
+                type: "POST",
+                data: {
+                    action: "mkl_pc_preview_invalid_presets",
+                    nonce: MKL_PC_BulkGenerator.nonce,
+                    product_id: productId,
+                },
+                success: function (response) {
+                    $cleanupInvalidBtn.prop("disabled", false);
+                    
+                    if (!response.success) {
+                        alert("Error: " + (response.data.message || "Unknown error"));
+                        setStatus("Scan failed.", "error");
+                        return;
+                    }
+
+                    var invalid = response.data.presets || [];
+                    var total = response.data.total || 0;
+
+                    if (total === 0) {
+                        alert("No invalid presets found! All presets have valid configurations.");
+                        setStatus("No invalid presets found.", "success");
+                        appendLog("All presets have valid configurations.", "success", { force: true });
+                        return;
+                    }
+
+                    // Build preview list
+                    var previewHtml = "<div style='max-height:400px;overflow-y:auto;margin:10px 0;'>";
+                    previewHtml += "<p style='margin-bottom:10px;'><strong>Found " + total + " invalid preset(s):</strong></p>";
+                    previewHtml += "<ul style='list-style:none;padding:0;margin:0;'>";
+                    
+                    invalid.forEach(function(preset) {
+                        previewHtml += "<li style='padding:8px;margin:4px 0;background:#f9f9f9;border-left:3px solid #ff9800;'>";
+                        previewHtml += "<strong>ID " + preset.id + ":</strong> " + preset.title + "<br>";
+                        previewHtml += "<small style='color:#666;'>" + preset.details + " | Modified: " + preset.modified + "</small>";
+                        previewHtml += "</li>";
+                    });
+                    
+                    previewHtml += "</ul></div>";
+                    previewHtml += "<p><strong style='color:#dc3545;'>⚠️ This action cannot be undone!</strong></p>";
+
+                    // Show modal with preview and confirmation
+                    var modalHtml = "<div id='mkl-pc-cleanup-invalid-modal' style='position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,0.5);z-index:999999;display:flex;align-items:center;justify-content:center;'>";
+                    modalHtml += "<div style='background:white;padding:20px;border-radius:8px;max-width:600px;width:90%;box-shadow:0 4px 20px rgba(0,0,0,0.3);'>";
+                    modalHtml += "<h2 style='margin-top:0;'>Confirm Cleanup - Invalid Configurations</h2>";
+                    modalHtml += previewHtml;
+                    modalHtml += "<div style='display:flex;gap:10px;justify-content:flex-end;margin-top:20px;'>";
+                    modalHtml += "<button id='mkl-pc-cleanup-invalid-cancel' class='button' style='padding:8px 16px;'>Cancel</button>";
+                    modalHtml += "<button id='mkl-pc-cleanup-invalid-confirm' class='button button-primary' style='background:#ff9800;border-color:#ff9800;padding:8px 16px;'>Delete " + total + " Invalid Preset(s)</button>";
+                    modalHtml += "</div></div></div>";
+
+                    $('body').append(modalHtml);
+
+                    // Cancel button
+                    $('#mkl-pc-cleanup-invalid-cancel').on('click', function() {
+                        $('#mkl-pc-cleanup-invalid-modal').remove();
+                        setStatus("Cleanup cancelled.", "info");
+                        appendLog("Cleanup cancelled by user.", "info", { force: true });
+                    });
+
+                    // Confirm button - Step 2: Actually delete
+                    $('#mkl-pc-cleanup-invalid-confirm').on('click', function() {
+                        $('#mkl-pc-cleanup-invalid-modal').remove();
+                        $cleanupInvalidBtn.prop("disabled", true);
+                        setStatus("Deleting invalid presets...", "warn");
+                        appendLog("Deleting " + total + " invalid presets...", "warn", { force: true });
+
+                        $.ajax({
+                            url: MKL_PC_BulkGenerator.ajax_url,
+                            type: "POST",
+                            data: {
+                                action: "mkl_pc_cleanup_invalid_presets",
+                                nonce: MKL_PC_BulkGenerator.nonce,
+                                product_id: productId,
+                                confirm: true,
+                            },
+                            success: function (response) {
+                                if (response.success) {
+                                    var msg = "Checked " + response.data.checked + " presets, deleted " + 
+                                              response.data.deleted + " with invalid configurations";
+                                    
+                                    if (response.data.errors > 0) {
+                                        msg += " (" + response.data.errors + " errors)";
+                                    }
+                                    
+                                    alert(msg);
+                                    
+                                    appendLog(msg, "success", { force: true });
+                                    setStatus("Cleanup complete.", "success");
+
+                                    // Refresh preset snapshot to update count
+                                    requestPresetSnapshot({ force: true }).done(function (snapshot) {
+                                        updateExistingStat(snapshot.count);
+                                    });
+
+                                    // Reload configurations list
+                                    if (window.PC_Presets_Configurations) {
+                                        window.PC_Presets_Configurations.reset();
+                                    }
+                                } else {
+                                    setStatus("Error: " + response.data.message, "error");
+                                    appendLog("Cleanup failed: " + response.data.message, "error", { force: true });
+                                    alert("Error: " + response.data.message);
+                                }
+                            },
+                            error: function () {
+                                setStatus("AJAX error during cleanup.", "error");
+                                appendLog("AJAX error during cleanup.", "error", { force: true });
+                                alert("AJAX error during cleanup.");
+                            },
+                            complete: function () {
+                                $cleanupInvalidBtn.prop("disabled", false);
+                            },
+                        });
+                    });
+                },
+                error: function () {
+                    $cleanupInvalidBtn.prop("disabled", false);
                     setStatus("AJAX error during scan.", "error");
                     appendLog("AJAX error during scan.", "error", { force: true });
                     alert("AJAX error during scan.");

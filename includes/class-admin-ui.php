@@ -46,6 +46,8 @@ class MKL_PC_Preset_Generator_Admin_UI
         add_action('wp_ajax_mkl_pc_delete_all_presets', [$this, 'ajax_delete_all']);
         add_action('wp_ajax_mkl_pc_preview_orphaned_presets', [$this, 'ajax_preview_orphaned_presets']);
         add_action('wp_ajax_mkl_pc_cleanup_orphaned_presets', [$this, 'ajax_cleanup_orphaned_presets']);
+        add_action('wp_ajax_mkl_pc_preview_invalid_presets', [$this, 'ajax_preview_invalid_presets']);
+        add_action('wp_ajax_mkl_pc_cleanup_invalid_presets', [$this, 'ajax_cleanup_invalid_presets']);
         add_action('wp_ajax_mkl_pc_generate_preset_thumbnail', [$this, 'ajax_generate_preset_thumbnail']);
 
         // High-priority compatibility override: ensure a thumbnail URL is returned for the core endpoint
@@ -420,6 +422,9 @@ class MKL_PC_Preset_Generator_Admin_UI
                     </button>
                     <button type="button" class="mkl-pc-cleanup-orphaned-btn warning" data-product-id="<?php echo esc_attr($product_id); ?>">
                         <?php esc_html_e('Clean Up Orphaned Presets', 'mkl-pc-preset-generator'); ?>
+                    </button>
+                    <button type="button" class="mkl-pc-cleanup-invalid-btn warning" data-product-id="<?php echo esc_attr($product_id); ?>">
+                        <?php esc_html_e('Clean Up Invalid Presets', 'mkl-pc-preset-generator'); ?>
                     </button>
                     <button type="button" class="mkl-pc-stop-btn stop" disabled>
                         <?php esc_html_e('Stop Run', 'mkl-pc-preset-generator'); ?>
@@ -1675,6 +1680,70 @@ class MKL_PC_Preset_Generator_Admin_UI
             'errors' => $stats['errors'],
             'message' => sprintf(
                 __('Checked %d presets, deleted %d without images', 'mkl-pc-preset-generator'),
+                $stats['checked'],
+                $stats['deleted']
+            ),
+        ]);
+    }
+
+    /**
+     * AJAX: Get list of invalid presets (duplicate layers, empty configs) for preview
+     */
+    public function ajax_preview_invalid_presets()
+    {
+        check_ajax_referer('mkl_pc_bulk_generator', 'nonce');
+
+        if (! current_user_can('manage_woocommerce')) {
+            wp_send_json_error(['message' => __('Permission denied', 'mkl-pc-preset-generator')]);
+        }
+
+        $product_id = isset($_POST['product_id']) ? intval($_POST['product_id']) : 0;
+
+        if (! $product_id) {
+            wp_send_json_error(['message' => __('Invalid product ID', 'mkl-pc-preset-generator')]);
+        }
+
+        $saver = new MKL_PC_Preset_Saver($product_id);
+        $invalid = $saver->get_invalid_presets();
+
+        wp_send_json_success([
+            'total' => count($invalid),
+            'presets' => $invalid,
+        ]);
+    }
+
+    /**
+     * AJAX: Clean up invalid presets (duplicate layers, empty configs)
+     */
+    public function ajax_cleanup_invalid_presets()
+    {
+        check_ajax_referer('mkl_pc_bulk_generator', 'nonce');
+
+        if (! current_user_can('manage_woocommerce')) {
+            wp_send_json_error(['message' => __('Permission denied', 'mkl-pc-preset-generator')]);
+        }
+
+        $product_id = isset($_POST['product_id']) ? intval($_POST['product_id']) : 0;
+
+        if (! $product_id) {
+            wp_send_json_error(['message' => __('Invalid product ID', 'mkl-pc-preset-generator')]);
+        }
+
+        $confirm = isset($_POST['confirm']) ? filter_var($_POST['confirm'], FILTER_VALIDATE_BOOLEAN) : false;
+
+        if (! $confirm) {
+            wp_send_json_error(['message' => __('Confirmation required', 'mkl-pc-preset-generator')]);
+        }
+
+        $saver = new MKL_PC_Preset_Saver($product_id);
+        $stats = $saver->cleanup_invalid_presets();
+
+        wp_send_json_success([
+            'checked' => $stats['checked'],
+            'deleted' => $stats['deleted'],
+            'errors' => $stats['errors'],
+            'message' => sprintf(
+                __('Checked %d presets, deleted %d with invalid configurations', 'mkl-pc-preset-generator'),
                 $stats['checked'],
                 $stats['deleted']
             ),

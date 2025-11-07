@@ -607,4 +607,127 @@ class MKL_PC_Preset_Saver
 
         return $orphaned;
     }
+
+    /**
+     * Get detailed list of presets with invalid configurations
+     * Returns array of preset details for preview/confirmation
+     * 
+     * Invalid configurations include:
+     * - Duplicate layer IDs (same layer appears multiple times)
+     * - Empty configurations
+     * 
+     * @return array Array of preset details
+     */
+    public function get_invalid_presets()
+    {
+        global $wpdb;
+        
+        // Find all presets for this product
+        $presets = $wpdb->get_results(
+            $wpdb->prepare(
+                "SELECT ID, post_title, post_content, post_date, post_modified 
+                 FROM {$wpdb->posts} 
+                 WHERE post_parent = %d 
+                   AND post_type = %s 
+                   AND post_status = %s
+                 ORDER BY post_modified DESC",
+                $this->product_id,
+                'mkl_pc_configuration',
+                'preset'
+            ),
+            ARRAY_A
+        );
+
+        if (empty($presets)) {
+            return [];
+        }
+
+        $invalid = [];
+
+        // Check each preset configuration
+        foreach ($presets as $preset) {
+            $preset_id = (int) $preset['ID'];
+            $content = $preset['post_content'];
+            
+            // Try to decode configuration
+            $config = json_decode($content, true);
+            
+            if (! is_array($config) || empty($config)) {
+                $invalid[] = [
+                    'id' => $preset_id,
+                    'title' => $preset['post_title'],
+                    'created' => $preset['post_date'],
+                    'modified' => $preset['post_modified'],
+                    'reason' => 'empty_configuration',
+                    'details' => 'Configuration is empty or invalid JSON',
+                ];
+                continue;
+            }
+
+            // Check for duplicate layer IDs
+            $layer_ids = [];
+            $duplicate_layers = [];
+            
+            foreach ($config as $layer) {
+                if (isset($layer['layer_id'])) {
+                    $layer_id = (int) $layer['layer_id'];
+                    
+                    if (in_array($layer_id, $layer_ids)) {
+                        // Found duplicate!
+                        $layer_name = isset($layer['layer_name']) ? $layer['layer_name'] : 'Layer #' . $layer_id;
+                        if (! in_array($layer_name, $duplicate_layers)) {
+                            $duplicate_layers[] = $layer_name;
+                        }
+                    } else {
+                        $layer_ids[] = $layer_id;
+                    }
+                }
+            }
+
+            if (! empty($duplicate_layers)) {
+                $invalid[] = [
+                    'id' => $preset_id,
+                    'title' => $preset['post_title'],
+                    'created' => $preset['post_date'],
+                    'modified' => $preset['post_modified'],
+                    'reason' => 'duplicate_layers',
+                    'details' => 'Duplicate layers: ' . implode(', ', $duplicate_layers),
+                    'duplicate_layers' => $duplicate_layers,
+                ];
+            }
+        }
+
+        return $invalid;
+    }
+
+    /**
+     * Clean up invalid presets (duplicate layers, empty configs)
+     * 
+     * @return array Stats about cleanup
+     */
+    public function cleanup_invalid_presets()
+    {
+        $stats = [
+            'checked' => 0,
+            'deleted' => 0,
+            'errors' => 0,
+        ];
+
+        $invalid = $this->get_invalid_presets();
+        $stats['checked'] = count($invalid);
+
+        foreach ($invalid as $preset) {
+            $deleted = wp_delete_post($preset['id'], true); // true = force delete (skip trash)
+            
+            if ($deleted) {
+                $stats['deleted']++;
+                error_log("Deleted invalid preset #{$preset['id']} (reason: {$preset['reason']})");
+            } else {
+                $stats['errors']++;
+                error_log("Failed to delete invalid preset #{$preset['id']}");
+            }
+        }
+
+        return $stats;
+    }
 }
