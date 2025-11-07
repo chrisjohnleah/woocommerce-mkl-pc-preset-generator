@@ -648,6 +648,7 @@ class MKL_PC_Preset_Saver
         foreach ($presets as $preset) {
             $preset_id = (int) $preset['ID'];
             $content = $preset['post_content'];
+            $title = $preset['post_title'];
             
             // Try to decode configuration
             $config = json_decode($content, true);
@@ -655,7 +656,7 @@ class MKL_PC_Preset_Saver
             if (! is_array($config) || empty($config)) {
                 $invalid[] = [
                     'id' => $preset_id,
-                    'title' => $preset['post_title'],
+                    'title' => $title,
                     'created' => $preset['post_date'],
                     'modified' => $preset['post_modified'],
                     'reason' => 'empty_configuration',
@@ -664,7 +665,14 @@ class MKL_PC_Preset_Saver
                 continue;
             }
 
-            // Check for duplicate layer IDs
+            // Check for duplicate patterns in title (e.g., "Size: X | Size: Y")
+            // This catches cases where title shows duplicates even if config structure is nested
+            $title_has_duplicates = false;
+            if (preg_match('/(\d+\s*x\s*\d+\s*x\s*\d+mm).*\|.*\1/', $title)) {
+                $title_has_duplicates = true;
+            }
+
+            // Check for duplicate layer IDs in configuration
             $layer_ids = [];
             $duplicate_layers = [];
             
@@ -684,14 +692,23 @@ class MKL_PC_Preset_Saver
                 }
             }
 
-            if (! empty($duplicate_layers)) {
+            // Flag as invalid if duplicates found in config OR title pattern suggests duplicates
+            if (! empty($duplicate_layers) || $title_has_duplicates) {
+                $reason_parts = [];
+                if (! empty($duplicate_layers)) {
+                    $reason_parts[] = 'Duplicate layers: ' . implode(', ', $duplicate_layers);
+                }
+                if ($title_has_duplicates) {
+                    $reason_parts[] = 'Title contains duplicate size values';
+                }
+                
                 $invalid[] = [
                     'id' => $preset_id,
-                    'title' => $preset['post_title'],
+                    'title' => $title,
                     'created' => $preset['post_date'],
                     'modified' => $preset['post_modified'],
                     'reason' => 'duplicate_layers',
-                    'details' => 'Duplicate layers: ' . implode(', ', $duplicate_layers),
+                    'details' => implode(' | ', $reason_parts),
                     'duplicate_layers' => $duplicate_layers,
                 ];
             }
