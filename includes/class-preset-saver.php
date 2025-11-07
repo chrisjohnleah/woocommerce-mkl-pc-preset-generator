@@ -665,12 +665,35 @@ class MKL_PC_Preset_Saver
                 continue;
             }
 
-            // Check for duplicate patterns in title (e.g., "Size: X | Size: Y")
-            // This catches cases where title shows duplicates even if config structure is nested
-            $title_has_duplicates = false;
-            if (preg_match('/(\d+\s*x\s*\d+\s*x\s*\d+mm).*\|.*\1/', $title)) {
-                $title_has_duplicates = true;
+            // Check for multiple sizes or colours in title
+            // A valid preset can only have ONE size and ONE colour
+            $title_issues = [];
+            
+            // Count how many size patterns appear (e.g., "1200 x 600 x 840mm")
+            $size_pattern = '/\d+\s*x\s*\d+\s*x\s*\d+mm/';
+            preg_match_all($size_pattern, $title, $size_matches);
+            $size_count = count($size_matches[0]);
+            
+            if ($size_count > 1) {
+                $title_issues[] = "Multiple sizes ({$size_count} sizes found)";
             }
+            
+            // Check for colour-related patterns that might indicate duplicates
+            // Look for "Colour:" appearing multiple times
+            $colour_count = substr_count($title, 'Colour:');
+            if ($colour_count > 1) {
+                $title_issues[] = "Multiple colours ({$colour_count} colour labels found)";
+            }
+            
+            // Also check for duplicate size values specifically
+            if ($size_count > 1) {
+                $unique_sizes = array_unique($size_matches[0]);
+                if (count($unique_sizes) < $size_count) {
+                    $title_issues[] = "Duplicate size values";
+                }
+            }
+            
+            $title_has_duplicates = ! empty($title_issues);
 
             // Check for duplicate layer IDs in configuration
             $layer_ids = [];
@@ -698,8 +721,8 @@ class MKL_PC_Preset_Saver
                 if (! empty($duplicate_layers)) {
                     $reason_parts[] = 'Duplicate layers: ' . implode(', ', $duplicate_layers);
                 }
-                if ($title_has_duplicates) {
-                    $reason_parts[] = 'Title contains duplicate size values';
+                if (! empty($title_issues)) {
+                    $reason_parts = array_merge($reason_parts, $title_issues);
                 }
                 
                 $invalid[] = [
