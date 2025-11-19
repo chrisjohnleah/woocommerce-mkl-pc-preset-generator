@@ -68,60 +68,63 @@ class MKL_PC_Preset_Generator_Admin_UI
         }
 ?>
         <style>
-            /* Modern UI for Bulk Generator */
+            /* Modern UI for Bulk Generator - Sidebar Optimized */
             .mkl-pc-bulk-generator {
                 background: #fff;
                 border: 1px solid #c3c4c7;
                 border-radius: 4px;
                 box-shadow: 0 1px 1px rgba(0,0,0,0.04);
-                padding: 24px;
+                padding: 16px;
                 margin: 20px 0;
                 font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen-Sans, Ubuntu, Cantarell, "Helvetica Neue", sans-serif;
                 color: #1d2327;
-                max-width: 1200px;
+                /* Removed max-width to fit container */
+                width: auto;
+                box-sizing: border-box;
+            }
+
+            .mkl-pc-bulk-generator * {
+                box-sizing: border-box;
             }
 
             .mkl-pc-bulk-generator h3 {
                 margin: 0 0 8px;
-                font-size: 1.3em;
+                font-size: 1.1em;
                 font-weight: 600;
                 color: #1d2327;
             }
 
             .mkl-pc-bulk-generator p.description-main {
-                font-size: 14px;
+                font-size: 13px;
                 color: #50575e;
-                margin: 0 0 24px;
-                max-width: 800px;
-                line-height: 1.5;
+                margin: 0 0 16px;
+                line-height: 1.4;
             }
 
-            /* Actions Bar */
+            /* Actions Bar - Stacked for Sidebar */
             .mkl-pc-bulk-generator-actions {
                 display: flex;
-                gap: 12px;
-                align-items: center;
-                flex-wrap: wrap;
-                margin-bottom: 24px;
-                padding-bottom: 24px;
+                flex-direction: column;
+                gap: 8px;
+                margin-bottom: 20px;
+                padding-bottom: 20px;
                 border-bottom: 1px solid #f0f0f1;
             }
 
             .mkl-pc-bulk-generator-actions button {
-                display: inline-flex;
+                display: flex;
                 align-items: center;
                 justify-content: center;
-                padding: 6px 16px;
+                padding: 8px 12px;
                 font-size: 13px;
                 font-weight: 500;
                 border-radius: 4px;
                 cursor: pointer;
                 transition: all 0.2s ease;
                 border: 1px solid transparent;
-                line-height: 2;
-                height: auto;
-                min-height: 32px;
-                white-space: nowrap;
+                line-height: 1.4;
+                width: 100%; /* Full width buttons */
+                text-align: center;
             }
 
             .mkl-pc-bulk-generator-actions button:focus {
@@ -198,56 +201,53 @@ class MKL_PC_Preset_Generator_Admin_UI
                 cursor: not-allowed;
             }
 
-            /* Panels Grid */
+            /* Panels Grid - Stacked */
             .mkl-pc-bulk-panels {
-                display: grid;
-                grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
-                gap: 20px;
-                align-items: start;
+                display: flex;
+                flex-direction: column;
+                gap: 16px;
             }
 
             .mkl-pc-bulk-panel {
                 background: #fff;
                 border: 1px solid #dcdcde;
                 border-radius: 4px;
-                padding: 20px;
+                padding: 16px;
                 display: flex;
                 flex-direction: column;
-                height: 100%;
-                box-sizing: border-box;
             }
 
             /* Variations Panel */
             .mkl-pc-variations-header strong {
                 display: block;
-                font-size: 14px;
+                font-size: 13px;
                 font-weight: 600;
                 color: #1d2327;
-                margin-bottom: 6px;
+                margin-bottom: 4px;
             }
 
             .mkl-pc-variations-header .description {
-                font-size: 13px;
+                font-size: 12px;
                 color: #646970;
-                line-height: 1.5;
+                line-height: 1.4;
                 margin: 0;
             }
 
             .mkl-pc-variations-body {
-                margin-top: 16px;
-                padding-top: 16px;
+                margin-top: 12px;
+                padding-top: 12px;
                 border-top: 1px solid #f0f0f1;
             }
 
             .mkl-pc-variations-options {
-                margin-top: 16px;
+                margin-top: 12px;
                 background: #f6f7f7;
-                padding: 12px;
+                padding: 10px;
                 border-radius: 4px;
             }
 
             .mkl-pc-variations-options label {
-                font-size: 13px;
+                font-size: 12px;
                 color: #1d2327;
                 font-weight: 500;
                 cursor: pointer;
@@ -257,33 +257,33 @@ class MKL_PC_Preset_Generator_Admin_UI
             .mkl-pc-bulk-generator-info {
                 display: flex;
                 flex-direction: column;
-                gap: 16px;
+                gap: 12px;
             }
 
             .mkl-pc-bulk-stats {
                 display: grid;
                 grid-template-columns: 1fr 1fr;
-                gap: 12px;
+                gap: 8px;
             }
 
             .mkl-pc-bulk-stat {
                 background: #f6f7f7;
                 border-radius: 4px;
-                padding: 16px;
+                padding: 12px;
                 text-align: center;
                 border: 1px solid #f0f0f1;
             }
 
             .mkl-pc-bulk-stat-value {
-                font-size: 24px;
+                font-size: 20px;
                 font-weight: 600;
                 color: #2271b1;
                 line-height: 1;
-                margin-bottom: 6px;
+                margin-bottom: 4px;
             }
 
             .mkl-pc-bulk-stat-label {
-                font-size: 11px;
+                font-size: 10px;
                 text-transform: uppercase;
                 letter-spacing: 0.5px;
                 color: #646970;
@@ -294,22 +294,22 @@ class MKL_PC_Preset_Generator_Admin_UI
                 background: #f0f6fc;
                 border: 1px solid #c5d7ed;
                 border-radius: 4px;
-                padding: 16px;
+                padding: 12px;
             }
 
             .mkl-pc-estimate-results .estimate-label {
-                font-size: 11px;
+                font-size: 10px;
                 text-transform: uppercase;
                 letter-spacing: 0.5px;
                 color: #135e96;
                 font-weight: 700;
-                margin-bottom: 6px;
+                margin-bottom: 4px;
             }
 
             .mkl-pc-estimate-results .estimate-value {
-                font-size: 14px;
+                font-size: 13px;
                 color: #1d2327;
-                line-height: 1.5;
+                line-height: 1.4;
             }
 
             /* Live Status Panel */
@@ -321,13 +321,13 @@ class MKL_PC_Preset_Generator_Admin_UI
                 display: flex;
                 justify-content: space-between;
                 align-items: center;
-                margin-bottom: 16px;
-                padding-bottom: 12px;
+                margin-bottom: 12px;
+                padding-bottom: 10px;
                 border-bottom: 1px solid #f0f0f1;
             }
 
             .mkl-pc-bulk-live-status span:first-child {
-                font-size: 11px;
+                font-size: 10px;
                 text-transform: uppercase;
                 letter-spacing: 0.5px;
                 color: #646970;
@@ -336,8 +336,8 @@ class MKL_PC_Preset_Generator_Admin_UI
 
             .status-text {
                 font-weight: 600;
-                font-size: 12px;
-                padding: 2px 8px;
+                font-size: 11px;
+                padding: 2px 6px;
                 border-radius: 4px;
                 background: #f0f0f1;
                 color: #50575e;
@@ -352,35 +352,35 @@ class MKL_PC_Preset_Generator_Admin_UI
                 display: grid;
                 grid-template-columns: repeat(2, 1fr);
                 gap: 8px;
-                margin-bottom: 16px;
+                margin-bottom: 12px;
             }
 
             .mkl-pc-bulk-live-card {
                 background: #fff;
                 border: 1px solid #e2e4e7;
                 border-radius: 4px;
-                padding: 10px;
+                padding: 8px;
                 text-align: center;
             }
 
             .mkl-pc-bulk-live-card .value {
-                font-size: 16px;
+                font-size: 14px;
                 font-weight: 600;
                 color: #1d2327;
             }
 
             .mkl-pc-bulk-live-card .label {
-                font-size: 10px;
+                font-size: 9px;
                 text-transform: uppercase;
                 color: #646970;
-                margin-top: 4px;
+                margin-top: 2px;
             }
 
             .mkl-pc-bulk-live-log {
                 background: #1d2327;
                 border-radius: 4px;
                 padding: 0;
-                height: 150px;
+                height: 120px;
                 overflow: hidden;
                 display: flex;
                 flex-direction: column;
@@ -389,27 +389,27 @@ class MKL_PC_Preset_Generator_Admin_UI
 
             .mkl-pc-bulk-live-log ul {
                 margin: 0;
-                padding: 12px;
+                padding: 10px;
                 list-style: none;
                 overflow-y: auto;
                 flex: 1;
                 font-family: Consolas, Monaco, monospace;
-                font-size: 11px;
+                font-size: 10px;
             }
 
             .mkl-pc-bulk-live-log li {
                 color: #a7aaad;
                 margin-bottom: 4px;
                 display: flex;
-                gap: 8px;
-                line-height: 1.4;
+                gap: 6px;
+                line-height: 1.3;
             }
 
             .mkl-pc-bulk-live-log li:last-child { margin-bottom: 0; }
 
             .mkl-pc-bulk-live-log li .timestamp {
                 color: #646970;
-                min-width: 55px;
+                min-width: 45px;
                 flex-shrink: 0;
             }
 
@@ -419,10 +419,10 @@ class MKL_PC_Preset_Generator_Admin_UI
 
             /* Progress Bar */
             .mkl-pc-bulk-generator-progress {
-                margin-top: 24px;
+                margin-top: 16px;
                 background: #fff;
                 border-top: 1px solid #f0f0f1;
-                padding-top: 20px;
+                padding-top: 16px;
                 display: none;
             }
 
@@ -431,9 +431,9 @@ class MKL_PC_Preset_Generator_Admin_UI
             }
 
             .progress-bar-container {
-                height: 20px;
+                height: 16px;
                 background: #f0f0f1;
-                border-radius: 10px;
+                border-radius: 8px;
                 overflow: hidden;
                 box-shadow: inset 0 1px 2px rgba(0,0,0,0.1);
             }
@@ -444,7 +444,7 @@ class MKL_PC_Preset_Generator_Admin_UI
                 background-image: linear-gradient(45deg,rgba(255,255,255,.15) 25%,transparent 25%,transparent 50%,rgba(255,255,255,.15) 50%,rgba(255,255,255,.15) 75%,transparent 75%,transparent);
                 background-size: 1rem 1rem;
                 transition: width 0.3s ease;
-                font-size: 10px;
+                font-size: 9px;
                 display: flex;
                 align-items: center;
                 justify-content: center;
@@ -455,9 +455,9 @@ class MKL_PC_Preset_Generator_Admin_UI
 
             .progress-status {
                 text-align: center;
-                font-size: 12px;
+                font-size: 11px;
                 color: #646970;
-                margin-top: 8px;
+                margin-top: 6px;
                 font-weight: 500;
             }
         </style>
