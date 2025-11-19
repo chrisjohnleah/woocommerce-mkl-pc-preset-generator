@@ -460,6 +460,53 @@ class MKL_PC_Preset_Generator_Admin_UI
                 margin-top: 6px;
                 font-weight: 500;
             }
+
+            /* Collapsible Panels */
+            .mkl-pc-bulk-panel-header {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                cursor: pointer;
+                padding-bottom: 8px;
+                margin-bottom: 8px;
+                border-bottom: 1px solid #f0f0f1;
+            }
+            .mkl-pc-bulk-panel.collapsed .mkl-pc-bulk-panel-content {
+                display: none;
+            }
+            .mkl-pc-bulk-panel.collapsed .mkl-pc-bulk-panel-header {
+                margin-bottom: 0;
+                border-bottom: none;
+                padding-bottom: 0;
+            }
+            .panel-toggle-icon {
+                transition: transform 0.2s;
+            }
+            .mkl-pc-bulk-panel.collapsed .panel-toggle-icon {
+                transform: rotate(-90deg);
+            }
+
+            /* Log Actions */
+            .mkl-pc-log-actions {
+                display: flex;
+                gap: 8px;
+                padding: 4px 8px;
+                background: #2c3338;
+                border-bottom: 1px solid #000;
+                justify-content: flex-end;
+            }
+            .mkl-pc-log-btn {
+                font-size: 10px;
+                padding: 2px 6px;
+                cursor: pointer;
+                background: #2271b1;
+                border: 1px solid #2271b1;
+                border-radius: 3px;
+                color: #fff;
+            }
+            .mkl-pc-log-btn:hover {
+                background: #135e96;
+            }
         </style>
 
         <script type="text/html" id="tmpl-mkl-pc-bulk-generator-ui">
@@ -490,26 +537,34 @@ class MKL_PC_Preset_Generator_Admin_UI
 
                 <div class="mkl-pc-bulk-panels">
                     <div class="mkl-pc-bulk-panel" id="mkl-pc-variations-panel">
-                        <div class="mkl-pc-variations-header">
-                            <strong><?php esc_html_e('Layer Variations', 'mkl-pc-preset-generator'); ?></strong>
-                            <p class="description">
-                                <?php esc_html_e('Pick up to two layers. When you start a generation run the plugin will iterate every valid choice for those layers on top of each base preset.', 'mkl-pc-preset-generator'); ?>
-                            </p>
+                        <div class="mkl-pc-bulk-panel-header" onclick="jQuery(this).parent().toggleClass('collapsed')">
+                            <div>
+                                <strong><?php esc_html_e('Layer Variations', 'mkl-pc-preset-generator'); ?></strong>
+                                <p class="description" style="margin:0;font-size:11px;">
+                                    <?php esc_html_e('Iterate choices for specific layers.', 'mkl-pc-preset-generator'); ?>
+                                </p>
+                            </div>
+                            <span class="dashicons dashicons-arrow-down-alt2 panel-toggle-icon"></span>
                         </div>
-                        <div class="mkl-pc-variations-body">
-                            <div class="mkl-pc-variations-layers" data-variation-layer-list></div>
-                            <div class="mkl-pc-variations-options">
-                                <div style="display:flex;flex-wrap:wrap;gap:16px;align-items:center;margin-bottom:8px;">
-                                    <label style="display:flex;align-items:center;gap:6px;">
-                                        <input type="checkbox" data-variation-include-base checked />
-                                        <?php esc_html_e('Include the current selection', 'mkl-pc-preset-generator'); ?>
-                                    </label>
-                                    <label style="display:flex;align-items:center;gap:6px;">
-                                        <?php esc_html_e('Max variations', 'mkl-pc-preset-generator'); ?>
-                                        <input type="number" min="0" max="500" step="1" value="0" data-variation-limit style="width:80px;padding:4px 8px;border:1px solid #8c8f94;border-radius:4px;" />
-                                    </label>
+                        <div class="mkl-pc-bulk-panel-content">
+                            <div class="mkl-pc-variations-header" style="display:none;">
+                                <!-- Moved to header click area -->
+                            </div>
+                            <div class="mkl-pc-variations-body" style="margin-top:0;border-top:none;padding-top:0;">
+                                <div class="mkl-pc-variations-layers" data-variation-layer-list></div>
+                                <div class="mkl-pc-variations-options">
+                                    <div style="display:flex;flex-wrap:wrap;gap:16px;align-items:center;margin-bottom:8px;">
+                                        <label style="display:flex;align-items:center;gap:6px;">
+                                            <input type="checkbox" data-variation-include-base checked />
+                                            <?php esc_html_e('Include the current selection', 'mkl-pc-preset-generator'); ?>
+                                        </label>
+                                        <label style="display:flex;align-items:center;gap:6px;">
+                                            <?php esc_html_e('Max variations', 'mkl-pc-preset-generator'); ?>
+                                            <input type="number" min="0" max="500" step="1" value="0" data-variation-limit style="width:80px;padding:4px 8px;border:1px solid #8c8f94;border-radius:4px;" />
+                                        </label>
+                                    </div>
+                                    <p class="description" data-variation-message style="margin:0;font-style:italic;"></p>
                                 </div>
-                                <p class="description" data-variation-message style="margin:0;font-style:italic;"></p>
                             </div>
                         </div>
                     </div>
@@ -539,28 +594,32 @@ class MKL_PC_Preset_Generator_Admin_UI
                             <span class="status-text status--info" data-live="status"><?php esc_html_e('Ready to start.', 'mkl-pc-preset-generator'); ?></span>
                         </div>
                         <div class="mkl-pc-bulk-live-stats">
-                            <div class="mkl-pc-bulk-live-card">
+                            <div class="mkl-pc-bulk-live-card" title="<?php esc_attr_e('Time elapsed since start of run', 'mkl-pc-preset-generator'); ?>">
                                 <div class="value" data-live="elapsed">0:00</div>
                                 <div class="label"><?php esc_html_e('Elapsed', 'mkl-pc-preset-generator'); ?></div>
                             </div>
-                            <div class="mkl-pc-bulk-live-card">
+                            <div class="mkl-pc-bulk-live-card" title="<?php esc_attr_e('Number of presets generated per minute', 'mkl-pc-preset-generator'); ?>">
                                 <div class="value" data-live="rate">0</div>
                                 <div class="label"><?php esc_html_e('Presets / min', 'mkl-pc-preset-generator'); ?></div>
                             </div>
-                            <div class="mkl-pc-bulk-live-card">
+                            <div class="mkl-pc-bulk-live-card" title="<?php esc_attr_e('Average time to apply configuration', 'mkl-pc-preset-generator'); ?>">
                                 <div class="value" data-live="avg-apply">-</div>
                                 <div class="label"><?php esc_html_e('Avg Apply', 'mkl-pc-preset-generator'); ?></div>
                             </div>
-                            <div class="mkl-pc-bulk-live-card">
+                            <div class="mkl-pc-bulk-live-card" title="<?php esc_attr_e('Average time to save preset to database', 'mkl-pc-preset-generator'); ?>">
                                 <div class="value" data-live="avg-save">-</div>
                                 <div class="label"><?php esc_html_e('Avg Save', 'mkl-pc-preset-generator'); ?></div>
                             </div>
-                            <div class="mkl-pc-bulk-live-card">
+                            <div class="mkl-pc-bulk-live-card" title="<?php esc_attr_e('Presets skipped because they already exist', 'mkl-pc-preset-generator'); ?>">
                                 <div class="value" data-live="skipped-duplicates">0</div>
                                 <div class="label"><?php esc_html_e('Skipped (Dup)', 'mkl-pc-preset-generator'); ?></div>
                             </div>
                         </div>
                         <div class="mkl-pc-bulk-live-log">
+                            <div class="mkl-pc-log-actions">
+                                <button type="button" class="mkl-pc-log-btn" id="mkl-pc-log-download"><?php esc_html_e('Download', 'mkl-pc-preset-generator'); ?></button>
+                                <button type="button" class="mkl-pc-log-btn" id="mkl-pc-log-clear"><?php esc_html_e('Clear', 'mkl-pc-preset-generator'); ?></button>
+                            </div>
                             <ul data-live-log>
                                 <li class="log-entry log-entry--info">
                                     <span><?php esc_html_e('Activity will appear here once generation starts.', 'mkl-pc-preset-generator'); ?></span>

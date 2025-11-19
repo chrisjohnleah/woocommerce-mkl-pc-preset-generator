@@ -161,6 +161,13 @@
         $generateBtn.prop("disabled", false);
         canGenerateAfterRun = true;
 
+        // Prevent accidental navigation
+        $(window).on('beforeunload', function() {
+            if (currentRun && !currentRun.finished && !currentRun.cancelled) {
+                return MKL_PC_BulkGenerator.strings.confirm_leave || 'Generation is in progress. Are you sure you want to leave?';
+            }
+        });
+
         // Locks UI state
         var constraints = {}; // { layer_id: [choice_id] }
         var layerChoices = [];
@@ -169,18 +176,67 @@
         (function buildLocksUI() {
             var html = '' +
               '<div class="mkl-pc-bulk-panel" id="mkl-pc-locks-panel">' +
-              '  <div style="display:flex;justify-content:space-between;align-items:center;gap:12px;flex-wrap:wrap">' +
-              '    <strong>Locked Choices</strong>' +
-              '    <button type="button" class="button" id="mkl-pc-locks-reset">Clear Locks</button>' +
+              '  <div class="mkl-pc-bulk-panel-header" onclick="jQuery(this).parent().toggleClass(\'collapsed\')">' +
+              '    <div>' +
+              '      <strong>Locked Choices</strong>' +
+              '      <p class="description" style="margin:0;font-size:11px;">Restrict generation to specific choices.</p>' +
+              '    </div>' +
+              '    <span class="dashicons dashicons-arrow-down-alt2 panel-toggle-icon"></span>' +
               '  </div>' +
-              '  <div id="mkl-pc-locks-body" style="margin-top:10px;display:grid;gap:8px;"></div>' +
+              '  <div class="mkl-pc-bulk-panel-content">' +
+              '    <div style="display:flex;justify-content:flex-end;margin-bottom:10px;">' +
+              '      <button type="button" class="button" id="mkl-pc-locks-reset" style="font-size:11px;padding:2px 8px;min-height:24px;">Clear Locks</button>' +
+              '    </div>' +
+              '    <div id="mkl-pc-locks-body" style="display:grid;gap:8px;"></div>' +
+              '  </div>' +
               '</div>';
             $container.find('.mkl-pc-bulk-panels').prepend(html);
-            $container.on('click', '#mkl-pc-locks-reset', function(){
+            $container.on('click', '#mkl-pc-locks-reset', function(e){
+                e.stopPropagation();
                 constraints = {};
                 renderLocksBody();
             });
+            $container.on('click', '.mkl-pc-bulk-panel-content', function(e){
+                e.stopPropagation();
+            });
         })();
+
+        // Log Actions
+        $container.on('click', '#mkl-pc-log-clear', function() {
+            logEntries = [];
+            renderLog();
+        });
+
+        $container.on('click', '#mkl-pc-log-download', function() {
+            var text = logEntries.map(function(e) {
+                return '[' + (e.timeText || '') + '] ' + e.message;
+            }).join('\n');
+            var blob = new Blob([text], { type: 'text/plain' });
+            var url = URL.createObjectURL(blob);
+            var a = document.createElement('a');
+            a.href = url;
+            a.download = 'preset-generation-log-' + new Date().toISOString().slice(0,10) + '.txt';
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        });
+
+        // Keyboard shortcuts
+        $(document).on('keydown', function(e) {
+            // Ctrl+Enter or Cmd+Enter to Generate
+            if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+                if (!$generateBtn.prop('disabled')) {
+                    $generateBtn.click();
+                }
+            }
+            // Esc to Stop
+            if (e.key === 'Escape') {
+                if (!$stopBtn.prop('disabled')) {
+                    $stopBtn.click();
+                }
+            }
+        });
 
         // Fetch layers + choices to populate locks
         (function fetchLayerChoices() {
