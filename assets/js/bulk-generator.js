@@ -2258,7 +2258,7 @@
                     scheduleStatsUpdate();
                 }
                 pendingTargetState = null;
-                setTimeout(callback, 120);
+                setTimeout(callback, 0);
                 return;
             }
 
@@ -2279,7 +2279,7 @@
                     scheduleStatsUpdate();
                 }
                 pendingTargetState = null;
-                setTimeout(callback, 120);
+                setTimeout(callback, 0);
                 return;
             }
 
@@ -2329,6 +2329,28 @@
                 security: (window.PC_SYD && PC_SYD.save_config_nonce) ? PC_SYD.save_config_nonce : ''
             };
 
+            // Optimistic State Update
+            if (pendingTargetState && typeof pendingTargetState.forEach === "function") {
+                currentConfigState = new Map();
+                pendingTargetState.forEach(function (value, key) {
+                    currentConfigState.set(key, value);
+                });
+                pendingTargetState = null;
+            } else {
+                // Fallback: Re-calculate state from configuration if pendingTargetState is missing
+                currentConfigState = new Map();
+                if (Array.isArray(configuration)) {
+                    configuration.forEach(function (item) {
+                        if (item && item.is_choice && item.layer_id) {
+                            currentConfigState.set(String(item.layer_id), item.choice_id);
+                        }
+                    });
+                }
+            }
+
+            // Optimistic Callback: Proceed immediately - REVERTED due to server overload/missing images
+            // setTimeout(callback, 0);
+
             $.ajax({
                 url: MKL_PC_BulkGenerator.ajax_url,
                 type: 'POST',
@@ -2365,19 +2387,6 @@
                         }
                         if (configHash && presetSnapshot && presetSnapshot.hashes) {
                             presetSnapshot.hashes.add(configHash);
-                        }
-
-                        if (pendingTargetState && typeof pendingTargetState.forEach === "function") {
-                            currentConfigState = new Map();
-                            pendingTargetState.forEach(function (value, key) {
-                                currentConfigState.set(key, value);
-                            });
-                            pendingTargetState = null;
-                        } else {
-                            currentConfigState = new Map();
-                            userSelections.forEach(function (choice) {
-                                currentConfigState.set(String(choice.layer_id), choice.choice_id);
-                            });
                         }
 
                         if (presetSnapshot && presetSnapshot.productId === productId) {
@@ -2471,7 +2480,6 @@
                             }
                         })();
 
-                        setTimeout(callback, 200);
                         return;
                     }
 
@@ -2528,7 +2536,6 @@
                             });
                             pendingTargetState = null;
                         }
-                        setTimeout(callback, 200);
                         return;
                     }
 
@@ -2543,7 +2550,7 @@
                         { force: true },
                     );
                     pendingTargetState = null;
-                    setTimeout(callback, 200);
+                    pendingTargetState = null;
                 },
                 error: function (xhr, status, error) {
                     console.warn("✗ AJAX save failed:", error || status);
@@ -2557,7 +2564,7 @@
                         { force: true },
                     );
                     pendingTargetState = null;
-                    setTimeout(callback, 200);
+                    pendingTargetState = null;
                 },
                 complete: function () {
                     if (runMetrics) {
@@ -2568,6 +2575,8 @@
                         runMetrics.saveDurations.push(now - ajaxStartedAt);
                         scheduleStatsUpdate();
                     }
+                    // Proceed to next preset after a short delay to allow server to breathe
+                    setTimeout(callback, 50);
                 },
             });
         }
@@ -2798,7 +2807,7 @@
                     }
 
                     openLayer(layer, onReady, attempt + 1);
-                }, 60);
+                }, 15);
             }
 
             function waitForChoice(model, onReady, attempt) {
@@ -2843,7 +2852,7 @@
                     }
 
                     waitForChoice(model, onReady, attempt + 1);
-                }, 60);
+                }, 15);
             }
 
             function processNext() {
@@ -2861,12 +2870,16 @@
                             PC.fe.save_data.save(false),
                         );
                         finalConfig = enrichConfigurationOrdering(finalConfig);
-                        savePresetConfiguration(
-                            productId,
-                            presetName,
-                            finalConfig,
-                            callback,
-                        );
+                        
+                        // Add a small buffer to ensure visual state is settled before saving
+                        setTimeout(function() {
+                            savePresetConfiguration(
+                                productId,
+                                presetName,
+                                finalConfig,
+                                callback,
+                            );
+                        }, 100);
                     }, 60);
                     return;
                 }
