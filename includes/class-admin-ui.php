@@ -68,69 +68,129 @@ class MKL_PC_Preset_Generator_Admin_UI
         }
 ?>
         <style>
+            /* Modern UI for Bulk Generator */
             .mkl-pc-bulk-generator {
-                background: #f8f9fa;
-                border: 1px solid #dee2e6;
+                background: #fff;
+                border: 1px solid #c3c4c7;
                 border-radius: 4px;
-                padding: 20px;
-                margin-bottom: 20px;
+                box-shadow: 0 1px 1px rgba(0,0,0,0.04);
+                padding: 24px;
+                margin: 20px 0;
+                font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Oxygen-Sans, Ubuntu, Cantarell, "Helvetica Neue", sans-serif;
+                color: #1d2327;
+                max-width: 1200px;
             }
 
             .mkl-pc-bulk-generator h3 {
-                margin-top: 0;
-                color: #333;
+                margin: 0 0 8px;
+                font-size: 1.3em;
+                font-weight: 600;
+                color: #1d2327;
             }
 
+            .mkl-pc-bulk-generator p.description-main {
+                font-size: 14px;
+                color: #50575e;
+                margin: 0 0 24px;
+                max-width: 800px;
+                line-height: 1.5;
+            }
+
+            /* Actions Bar */
             .mkl-pc-bulk-generator-actions {
                 display: flex;
-                gap: 10px;
+                gap: 12px;
                 align-items: center;
                 flex-wrap: wrap;
+                margin-bottom: 24px;
+                padding-bottom: 24px;
+                border-bottom: 1px solid #f0f0f1;
             }
 
             .mkl-pc-bulk-generator-actions button {
-                padding: 10px 20px;
-                font-size: 14px;
-                border: none;
+                display: inline-flex;
+                align-items: center;
+                justify-content: center;
+                padding: 6px 16px;
+                font-size: 13px;
+                font-weight: 500;
                 border-radius: 4px;
                 cursor: pointer;
-                transition: all 0.3s;
+                transition: all 0.2s ease;
+                border: 1px solid transparent;
+                line-height: 2;
+                height: auto;
+                min-height: 32px;
+                white-space: nowrap;
+            }
+
+            .mkl-pc-bulk-generator-actions button:focus {
+                outline: 2px solid #2271b1;
+                outline-offset: 2px;
+                box-shadow: none;
             }
 
             .mkl-pc-bulk-generator-actions button.primary {
-                background: #0073aa;
-                color: white;
+                background: #2271b1;
+                color: #fff;
+                border-color: #2271b1;
             }
 
             .mkl-pc-bulk-generator-actions button.primary:hover {
-                background: #005177;
+                background: #135e96;
+                border-color: #135e96;
+            }
+
+            .mkl-pc-bulk-generator-actions button.primary:disabled {
+                background: #a7aaad !important;
+                border-color: #a7aaad !important;
+                color: #fff !important;
+                cursor: default;
             }
 
             .mkl-pc-bulk-generator-actions button.secondary {
-                background: #6c757d;
-                color: white;
+                background: #f6f7f7;
+                color: #2271b1;
+                border-color: #2271b1;
             }
 
             .mkl-pc-bulk-generator-actions button.secondary:hover {
-                background: #545b62;
+                background: #f0f0f1;
+                color: #135e96;
+                border-color: #135e96;
             }
 
             .mkl-pc-bulk-generator-actions button.danger {
-                background: #dc3545;
-                color: white;
+                background: #fff;
+                color: #d63638;
+                border-color: #d63638;
             }
 
             .mkl-pc-bulk-generator-actions button.danger:hover {
-                background: #c82333;
+                background: #fff8f8;
+                color: #b32d2e;
+                border-color: #b32d2e;
             }
 
             .mkl-pc-bulk-generator-actions button.warning {
-                background: #ff9800;
-                color: white;
+                background: #fff;
+                color: #d94f4f;
+                border-color: #d94f4f;
             }
 
             .mkl-pc-bulk-generator-actions button.warning:hover {
-                background: #e68900;
+                background: #fff8f8;
+            }
+
+            .mkl-pc-bulk-generator-actions button.stop {
+                background: #f0b849;
+                color: #1d2327;
+                border-color: #dba632;
+            }
+
+            .mkl-pc-bulk-generator-actions button.stop:hover {
+                background: #e0a839;
+                border-color: #c9992e;
             }
 
             .mkl-pc-bulk-generator-actions button:disabled {
@@ -138,30 +198,231 @@ class MKL_PC_Preset_Generator_Admin_UI
                 cursor: not-allowed;
             }
 
-            .mkl-pc-bulk-generator-info {
-                margin: 0;
-                padding: 0;
-                background: transparent;
-                border-radius: 0;
-                font-size: 13px;
-            }
-
+            /* Panels Grid */
             .mkl-pc-bulk-panels {
                 display: grid;
-                gap: 15px;
-                margin-top: 15px;
-                grid-template-columns: 1fr;
+                grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+                gap: 20px;
+                align-items: start;
             }
 
             .mkl-pc-bulk-panel {
-                background: #ffffff;
-                border-radius: 6px;
-                box-shadow: 0 1px 2px rgba(15, 23, 42, 0.08);
+                background: #fff;
+                border: 1px solid #dcdcde;
+                border-radius: 4px;
+                padding: 20px;
+                display: flex;
+                flex-direction: column;
+                height: 100%;
+                box-sizing: border-box;
+            }
+
+            /* Variations Panel */
+            .mkl-pc-variations-header strong {
+                display: block;
+                font-size: 14px;
+                font-weight: 600;
+                color: #1d2327;
+                margin-bottom: 6px;
+            }
+
+            .mkl-pc-variations-header .description {
+                font-size: 13px;
+                color: #646970;
+                line-height: 1.5;
+                margin: 0;
+            }
+
+            .mkl-pc-variations-body {
+                margin-top: 16px;
+                padding-top: 16px;
+                border-top: 1px solid #f0f0f1;
+            }
+
+            .mkl-pc-variations-options {
+                margin-top: 16px;
+                background: #f6f7f7;
+                padding: 12px;
+                border-radius: 4px;
+            }
+
+            .mkl-pc-variations-options label {
+                font-size: 13px;
+                color: #1d2327;
+                font-weight: 500;
+                cursor: pointer;
+            }
+
+            /* Stats Panel */
+            .mkl-pc-bulk-generator-info {
+                display: flex;
+                flex-direction: column;
+                gap: 16px;
+            }
+
+            .mkl-pc-bulk-stats {
+                display: grid;
+                grid-template-columns: 1fr 1fr;
+                gap: 12px;
+            }
+
+            .mkl-pc-bulk-stat {
+                background: #f6f7f7;
+                border-radius: 4px;
+                padding: 16px;
+                text-align: center;
+                border: 1px solid #f0f0f1;
+            }
+
+            .mkl-pc-bulk-stat-value {
+                font-size: 24px;
+                font-weight: 600;
+                color: #2271b1;
+                line-height: 1;
+                margin-bottom: 6px;
+            }
+
+            .mkl-pc-bulk-stat-label {
+                font-size: 11px;
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+                color: #646970;
+                font-weight: 600;
+            }
+
+            .mkl-pc-estimate-results {
+                background: #f0f6fc;
+                border: 1px solid #c5d7ed;
+                border-radius: 4px;
                 padding: 16px;
             }
 
+            .mkl-pc-estimate-results .estimate-label {
+                font-size: 11px;
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+                color: #135e96;
+                font-weight: 700;
+                margin-bottom: 6px;
+            }
+
+            .mkl-pc-estimate-results .estimate-value {
+                font-size: 14px;
+                color: #1d2327;
+                line-height: 1.5;
+            }
+
+            /* Live Status Panel */
+            .mkl-pc-bulk-live {
+                gap: 0;
+            }
+
+            .mkl-pc-bulk-live-status {
+                display: flex;
+                justify-content: space-between;
+                align-items: center;
+                margin-bottom: 16px;
+                padding-bottom: 12px;
+                border-bottom: 1px solid #f0f0f1;
+            }
+
+            .mkl-pc-bulk-live-status span:first-child {
+                font-size: 11px;
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+                color: #646970;
+                font-weight: 700;
+            }
+
+            .status-text {
+                font-weight: 600;
+                font-size: 12px;
+                padding: 2px 8px;
+                border-radius: 4px;
+                background: #f0f0f1;
+                color: #50575e;
+            }
+
+            .status-text.status--info { color: #1d2327; }
+            .status-text.status--success { background: #edfaef; color: #008a20; }
+            .status-text.status--warn { background: #fcf2d9; color: #9d6e0e; }
+            .status-text.status--error { background: #fbeaea; color: #d63638; }
+
+            .mkl-pc-bulk-live-stats {
+                display: grid;
+                grid-template-columns: repeat(2, 1fr);
+                gap: 8px;
+                margin-bottom: 16px;
+            }
+
+            .mkl-pc-bulk-live-card {
+                background: #fff;
+                border: 1px solid #e2e4e7;
+                border-radius: 4px;
+                padding: 10px;
+                text-align: center;
+            }
+
+            .mkl-pc-bulk-live-card .value {
+                font-size: 16px;
+                font-weight: 600;
+                color: #1d2327;
+            }
+
+            .mkl-pc-bulk-live-card .label {
+                font-size: 10px;
+                text-transform: uppercase;
+                color: #646970;
+                margin-top: 4px;
+            }
+
+            .mkl-pc-bulk-live-log {
+                background: #1d2327;
+                border-radius: 4px;
+                padding: 0;
+                height: 150px;
+                overflow: hidden;
+                display: flex;
+                flex-direction: column;
+                border: 1px solid #000;
+            }
+
+            .mkl-pc-bulk-live-log ul {
+                margin: 0;
+                padding: 12px;
+                list-style: none;
+                overflow-y: auto;
+                flex: 1;
+                font-family: Consolas, Monaco, monospace;
+                font-size: 11px;
+            }
+
+            .mkl-pc-bulk-live-log li {
+                color: #a7aaad;
+                margin-bottom: 4px;
+                display: flex;
+                gap: 8px;
+                line-height: 1.4;
+            }
+
+            .mkl-pc-bulk-live-log li:last-child { margin-bottom: 0; }
+
+            .mkl-pc-bulk-live-log li .timestamp {
+                color: #646970;
+                min-width: 55px;
+                flex-shrink: 0;
+            }
+
+            .log-entry--success { color: #46b450 !important; }
+            .log-entry--warn { color: #f0b849 !important; }
+            .log-entry--error { color: #d63638 !important; }
+
+            /* Progress Bar */
             .mkl-pc-bulk-generator-progress {
-                margin-top: 15px;
+                margin-top: 24px;
+                background: #fff;
+                border-top: 1px solid #f0f0f1;
+                padding-top: 20px;
                 display: none;
             }
 
@@ -170,245 +431,41 @@ class MKL_PC_Preset_Generator_Admin_UI
             }
 
             .progress-bar-container {
-                width: 100%;
-                height: 30px;
-                background: #e9ecef;
-                border-radius: 4px;
+                height: 20px;
+                background: #f0f0f1;
+                border-radius: 10px;
                 overflow: hidden;
-                position: relative;
+                box-shadow: inset 0 1px 2px rgba(0,0,0,0.1);
             }
 
             .progress-bar {
                 height: 100%;
-                background: linear-gradient(90deg, #0073aa, #00a0d2);
-                transition: width 0.3s;
+                background: #2271b1;
+                background-image: linear-gradient(45deg,rgba(255,255,255,.15) 25%,transparent 25%,transparent 50%,rgba(255,255,255,.15) 50%,rgba(255,255,255,.15) 75%,transparent 75%,transparent);
+                background-size: 1rem 1rem;
+                transition: width 0.3s ease;
+                font-size: 10px;
                 display: flex;
                 align-items: center;
                 justify-content: center;
-                color: white;
-                font-weight: bold;
-                font-size: 12px;
+                color: #fff;
+                font-weight: 600;
+                text-shadow: 0 1px 0 rgba(0,0,0,0.2);
             }
 
             .progress-status {
-                margin-top: 10px;
-                font-size: 13px;
-                color: #666;
-            }
-
-            .mkl-pc-bulk-stats {
-                display: grid;
-                grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
-                gap: 10px;
-                margin-top: 10px;
-            }
-
-            .mkl-pc-bulk-stat {
-                background: white;
-                padding: 10px;
-                border-radius: 4px;
                 text-align: center;
-            }
-
-            .mkl-pc-bulk-stat-value {
-                font-size: 24px;
-                font-weight: bold;
-                color: #0073aa;
-            }
-
-            .mkl-pc-bulk-stat-label {
-                font-size: 11px;
-                color: #666;
-                text-transform: uppercase;
-                margin-top: 5px;
-            }
-
-            .mkl-pc-estimate-results {
-                margin-top: 16px;
-                padding: 12px;
-                border: 1px solid #e2e8f0;
-                border-radius: 6px;
-                background: #ffffff;
-            }
-
-            .mkl-pc-estimate-results .estimate-label {
                 font-size: 12px;
-                text-transform: uppercase;
-                letter-spacing: 0.06em;
-                color: #64748b;
-                margin-bottom: 4px;
-            }
-
-            .mkl-pc-estimate-results .estimate-value {
-                font-size: 14px;
-                color: #0f172a;
-                line-height: 1.4;
-            }
-
-            .mkl-pc-estimate-results .estimate-value.estimate--success {
-                color: #047857;
-            }
-
-            .mkl-pc-estimate-results .estimate-value.estimate--info {
-                color: #0f172a;
-            }
-
-            .mkl-pc-estimate-results .estimate-value.estimate--warn {
-                color: #b7791f;
-            }
-
-            .mkl-pc-estimate-results .estimate-value.estimate--error {
-                color: #dc2626;
-            }
-
-            .mkl-pc-bulk-generator-actions button.stop {
-                background: #f0ad4e;
-                color: #1f2d3d;
-            }
-
-            .mkl-pc-bulk-generator-actions button.stop:hover {
-                background: #d79531;
-            }
-
-            .mkl-pc-bulk-generator-actions button.stop:disabled {
-                background: #fde2af;
-                color: #a3741c;
-            }
-
-            .mkl-pc-bulk-live {
-                display: flex;
-                flex-direction: column;
-                gap: 12px;
-            }
-
-            .mkl-pc-bulk-live-status {
-                display: flex;
-                justify-content: space-between;
-                align-items: center;
-                font-size: 13px;
-                color: #4a5568;
-            }
-
-            .mkl-pc-bulk-live-status span:first-child {
-                font-weight: 600;
-                letter-spacing: 0.02em;
-                text-transform: uppercase;
-                font-size: 11px;
-                color: #64748b;
-            }
-
-            .mkl-pc-bulk-live-status .status-text {
-                font-weight: 600;
-            }
-
-            .status-text.status--info {
-                color: #1f2937;
-            }
-
-            .status-text.status--success {
-                color: #217a2c;
-            }
-
-            .status-text.status--warn {
-                color: #b7791f;
-            }
-
-            .status-text.status--error {
-                color: #c53030;
-            }
-
-            .mkl-pc-bulk-live-stats {
-                display: grid;
-                grid-template-columns: repeat(auto-fit, minmax(120px, 1fr));
-                gap: 10px;
-            }
-
-            .mkl-pc-bulk-live-card {
-                background: #f8fafc;
-                border-radius: 6px;
-                padding: 10px 12px;
-                text-align: center;
-            }
-
-            .mkl-pc-bulk-live-card .value {
-                font-size: 20px;
-                font-weight: 600;
-                color: #006799;
-            }
-
-            .mkl-pc-bulk-live-card .label {
-                font-size: 11px;
-                text-transform: uppercase;
-                color: #64748b;
-                letter-spacing: 0.03em;
-                margin-top: 4px;
-            }
-
-            .mkl-pc-bulk-live-log {
-                border: 1px solid #e2e8f0;
-                border-radius: 6px;
-                background: #ffffff;
-                max-height: 160px;
-                overflow: hidden;
-                overflow-x: hidden;
-            }
-
-            .mkl-pc-bulk-live-log ul {
-                list-style: none;
-                margin: 0;
-                padding: 10px 12px;
-                max-height: 160px;
-                overflow-y: auto;
-                display: flex;
-                flex-direction: column;
-                gap: 6px;
-                word-break: break-word;
-            }
-
-            .mkl-pc-bulk-live-log li {
-                font-size: 12px;
-                display: grid;
-                grid-template-columns: minmax(0, 1fr) auto;
-                align-items: start;
-                gap: 8px;
-                color: #334155;
-                word-break: break-word;
-            }
-
-            .mkl-pc-bulk-live-log li .timestamp {
-                color: #9ca3af;
-                font-variant-numeric: tabular-nums;
-                white-space: nowrap;
-                justify-self: end;
-            }
-
-            @media (max-width: 640px) {
-                .mkl-pc-bulk-live-log li {
-                    grid-template-columns: 1fr;
-                }
-
-                .mkl-pc-bulk-live-log li .timestamp {
-                    justify-self: start;
-                }
-            }
-
-            .log-entry--success {
-                color: #1f7a3d;
-            }
-
-            .log-entry--warn {
-                color: #b7791f;
-            }
-
-            .log-entry--error {
-                color: #c53030;
+                color: #646970;
+                margin-top: 8px;
+                font-weight: 500;
             }
         </style>
 
         <script type="text/html" id="tmpl-mkl-pc-bulk-generator-ui">
             <div class="mkl-pc-bulk-generator">
                 <h3><?php esc_html_e('Bulk Preset Generator', 'mkl-pc-preset-generator'); ?></h3>
-                <p><?php esc_html_e('Automatically generate all valid configuration combinations based on conditional logic rules.', 'mkl-pc-preset-generator'); ?></p>
+                <p class="description-main"><?php esc_html_e('Automatically generate all valid configuration combinations based on conditional logic rules.', 'mkl-pc-preset-generator'); ?></p>
 
                 <div class="mkl-pc-bulk-generator-actions">
                     <button type="button" class="mkl-pc-generate-btn primary" data-product-id="<?php echo esc_attr($product_id); ?>" disabled>
@@ -433,27 +490,30 @@ class MKL_PC_Preset_Generator_Admin_UI
 
                 <div class="mkl-pc-bulk-panels">
                     <div class="mkl-pc-bulk-panel" id="mkl-pc-variations-panel">
-                        <div class="mkl-pc-variations-header" style="display:flex;flex-direction:column;gap:4px;">
+                        <div class="mkl-pc-variations-header">
                             <strong><?php esc_html_e('Layer Variations', 'mkl-pc-preset-generator'); ?></strong>
-                            <p class="description" style="margin:0;">
+                            <p class="description">
                                 <?php esc_html_e('Pick up to two layers. When you start a generation run the plugin will iterate every valid choice for those layers on top of each base preset.', 'mkl-pc-preset-generator'); ?>
                             </p>
                         </div>
-                        <div class="mkl-pc-variations-body" style="display:grid;gap:12px;margin-top:12px;">
+                        <div class="mkl-pc-variations-body">
                             <div class="mkl-pc-variations-layers" data-variation-layer-list></div>
-                            <div class="mkl-pc-variations-options" style="display:flex;flex-wrap:wrap;gap:16px;align-items:center;">
-                                <label style="display:flex;align-items:center;gap:6px;">
-                                    <input type="checkbox" data-variation-include-base checked />
-                                    <?php esc_html_e('Include the current selection', 'mkl-pc-preset-generator'); ?>
-                                </label>
-                                <label style="display:flex;align-items:center;gap:6px;">
-                                    <?php esc_html_e('Max variations', 'mkl-pc-preset-generator'); ?>
-                                    <input type="number" min="0" max="500" step="1" value="0" data-variation-limit style="width:90px;" />
-                                </label>
+                            <div class="mkl-pc-variations-options">
+                                <div style="display:flex;flex-wrap:wrap;gap:16px;align-items:center;margin-bottom:8px;">
+                                    <label style="display:flex;align-items:center;gap:6px;">
+                                        <input type="checkbox" data-variation-include-base checked />
+                                        <?php esc_html_e('Include the current selection', 'mkl-pc-preset-generator'); ?>
+                                    </label>
+                                    <label style="display:flex;align-items:center;gap:6px;">
+                                        <?php esc_html_e('Max variations', 'mkl-pc-preset-generator'); ?>
+                                        <input type="number" min="0" max="500" step="1" value="0" data-variation-limit style="width:80px;padding:4px 8px;border:1px solid #8c8f94;border-radius:4px;" />
+                                    </label>
+                                </div>
+                                <p class="description" data-variation-message style="margin:0;font-style:italic;"></p>
                             </div>
-                            <p class="description" data-variation-message></p>
                         </div>
                     </div>
+                    
                     <div class="mkl-pc-bulk-panel">
                         <div class="mkl-pc-bulk-generator-info">
                             <div class="mkl-pc-bulk-stats">
@@ -472,6 +532,7 @@ class MKL_PC_Preset_Generator_Admin_UI
                             </div>
                         </div>
                     </div>
+
                     <div class="mkl-pc-bulk-panel mkl-pc-bulk-live">
                         <div class="mkl-pc-bulk-live-status">
                             <span><?php esc_html_e('Status', 'mkl-pc-preset-generator'); ?></span>
